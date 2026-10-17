@@ -1,4 +1,4 @@
-# CSV analyst flow (version 2)
+# CSV analyst flow (version 3)
 
 Scope: CSV Dashboard, AI Analytics Ask, suggested questions, autocomplete and
 conversation persistence. Relational/PDF analytics and dedicated Copilot,
@@ -90,3 +90,16 @@ field. For ARIA_Test_Sales.csv independently compare revenue 285000, profit
 90000, quantity 90 and 30 records. Inspect actual model traces and all result
 sets. Stronger models and these checks do not guarantee universally correct
 business conclusions.
+
+## Validation repair diagnostics
+
+Rejected candidates are sent back to the same provider for a bounded repair,
+with a validation reason. The reason appears in the trace and backend log; raw
+model output, result rows and API keys are not logged. Explanations receive an
+explicit evidence-reference catalogue (first twelve rows per query), plus the
+full executed results, to reduce index/alias formatting errors. Invalid numeric
+claims and invalid references still fail closed. Presentation-only mismatches
+can render as tables; a multi-measure scalar dashboard query yields separate
+cards without changing SQL or calculated values. Missing format defaults to
+number, without inferring currency. Live failure causes from earlier logs cannot
+be determined retroactively because those logs did not include validation reasons.

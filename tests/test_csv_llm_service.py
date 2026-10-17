@@ -332,5 +332,40 @@ class CsvLlmTests(unittest.TestCase):
         saved.assert_called_once()
 
 
+    def test_repair_receives_rejected_candidate_and_trace_reason(self):
+        p = self.provider('not json', PLAN, STORY)
+        result = ask_csv(self.session, 7, 'Totals?')
+        repair_context = ' '.join(m['content'] for m in p.calls[1][1])
+        self.assertIn('not json', repair_context)
+        self.assertIn('Expecting value', result['llm_trace']['calls'][0]['validation_error'])
+
+    def test_multi_measure_chart_is_presented_as_table(self):
+        plan = copy.deepcopy(PLAN)
+        plan['queries'][0]['chart'] = 'bar'
+        plan['queries'][0].pop('format')
+        self.provider(plan, STORY)
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['chart_spec']['chart_type'], 'table')
+        self.assertEqual(result['data'][0]['total_profit'], 150)
+
+    def test_dashboard_accepts_multi_measure_scalar_query(self):
+        self.provider(PLAN, STORY)
+        result = dashboard(self.session, 7)
+        self.assertEqual([m['rawValue'] for m in result['metrics']], [500, 150])
+
+    def test_narrator_gets_copyable_reference_catalogue(self):
+        p = self.provider(PLAN, STORY)
+        ask_csv(self.session, 7, 'Totals?')
+        payload = ''.join(m['content'] for m in p.calls[1][1] if m['role'] == 'user')
+        self.assertIn('evidence_cells', payload)
+        self.assertIn('{{0:0:total_profit}}', payload)
+
+    def test_narration_general_intro_with_grounded_findings(self):
+        self.provider(PLAN, {'answer': 'Here is an overview of the stored measures.',
+            'findings': ['Revenue {{0:0:total_revenue}}; profit {{0:0:total_profit}}.'], 'followups': []})
+        result = ask_csv(self.session, 7, 'Overview')
+        self.assertIn('500', result['findings'][0])
+
+
 if __name__ == '__main__':
     unittest.main()
