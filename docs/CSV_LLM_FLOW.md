@@ -1,78 +1,92 @@
-# CSV LLM analysis
+# CSV analyst flow (version 2)
 
-CSV Dashboard and POST `/api/ask` now use `services/csv_llm_service.py`.
-The existing relational, PDF, prediction, copilot, autocomplete and dedicated
-Insights-page pipelines are not migrated by this change. No frontend files are
-changed. The existing UI still has its own chart formatting and annotations.
+Scope: CSV Dashboard, AI Analytics Ask, suggested questions, autocomplete and
+conversation persistence. Relational/PDF analytics and dedicated Copilot,
+Insights, forecasting and report generation remain separate pipelines. Existing
+CSV parsing/import validation is retained; no model rewrites uploaded data.
 
-## Flow
+## Data and planning
 
-1. Upload validates/parses CSV and imports SQLite deterministically. Upload
-   progress describes importing; it does not claim an LLM analyzed the file.
-2. Opening the dashboard sends schema/types/row count to the selected provider.
-   The LLM proposes KPI and chart SQL. Raw source-row samples are not sent.
-3. SQLite executes validated queries in a read-only connection with an
-   authorizer restricted to the connected table and approved SQL functions.
-   Queries have a three-second execution budget and a 200-result-row bound.
-4. A second LLM invocation explains executed results. Numeric statements use
-   result-cell references replaced by actual values. No automatic prior-month
-   comparison, business-cause template, or independent-verification claim is added.
-5. Questions use the same plan/execute/explain stages. The model declares
-   output measures/dimensions; existing keyword grounding and SQL rewrites are
-   bypassed. Multiple ungrouped totals stay separate metrics, not categories.
+- Profile metadata, exact total record count, missing/blank counts, distinct
+  counts, numeric ranges/means and full-row duplicates. The aggregate profile
+  covers at most the first 10,000 rows (explicitly marked, not a random sample),
+  with a five-second profiling budget. A timed-out check is unavailable rather
+  than guessed. Actual analysis SQL reads the full connected CSV.
+- No raw source-row samples are sent automatically. The model can plan targeted
+  read-only queries to inspect date formats, categories or other required values;
+  executed results are sent for explanation under the existing cloud consent.
+- LLM interprets dataset meaning and uncertain assumptions. Broad exploratory
+  questions explicitly request an overview, not automatic clarification. Specific
+  missing fields or genuinely conflicting meanings still require clarification.
+- Plan one to six complementary queries. Simple questions normally need one.
+  The model may request one investigation round after seeing initial results,
+  adding up to two queries. Maximum eight successful result sets and sixteen
+  SQL attempts including repairs. This is a bounded workflow, not an unlimited
+  autonomous analyst. Statistical work uses supported SQLite aggregates,
+  expressions and windows; arbitrary Python execution is not exposed.
+- Date interpretation and zero-safe ratios are instructed in the planner.
+  These instructions do not mathematically prove correct metric semantics.
+- Dashboard and Ask receive the same profile and saved dataset interpretation.
+  A new dataset fingerprint clears the old interpretation. Explicit questions
+  take priority over history; history includes all prior query definitions and
+  clarification exchanges, scoped to the conversation.
 
-Planning uses the `semi` model role (a chat-capable schema/planning model,
-including for local Ollama); explanation uses `story`. The provider continues
-to enforce cloud consent, redaction, configured models and rate limits.
-Provider errors surface as errors. Invalid JSON, unsafe SQL or invalid evidence
-references allow one repair per stage, then fail closed without template results.
-Ambiguous schema/question meaning returns a clarification response.
+## Execution and answers
 
-The planner chooses SQL, aliases, measure roles and chart type. Execution
-constraints are safety/shape validation, not rules selecting business metrics.
-Currency is not inferred from column names: this CSV path returns number format.
+Every query runs on a read-only SQLite connection restricted by an authorizer
+to the connected table and allowlisted functions. Per-query budget: three
+seconds and 200 result rows. SQL errors/invalid JSON receive one bounded repair
+per stage. Provider failures surface without a template fallback.
 
-## Traces and cache
+The explanation sees the original question and executed evidence from all
+queries. Numeric literals must reference result cells and are substituted by
+backend values. NULL and empty results remain distinct from zero. This prevents
+invented literal numbers but cannot prove that a referenced value is described
+correctly. `verified=false` remains deliberate.
 
-`llm_trace` appears in `/api/ask` responses and dashboard `config`. It records
-request ID, provider, per-invocation model, stage, status and elapsed milliseconds.
-`provider_invocation_count` counts calls to the adapter, not internal SDK retries.
-Token usage and exact network request counts are `null`: the current adapter
-does not expose them. Logs contain timing/model/status, not prompts or keys.
+`analysis_results` and `evidence` contain every query. Legacy top-level `data`,
+`sql_used`, `columns`, and chart fields retain the primary query for compatibility.
+AI Analytics renders each result separately, with charts, all returned rows in a
+scrollable table, SQL evidence, assumptions, quality limitations and model trace.
+Charts omit NULL measures with an explicit note; charts exceeding 60 points are
+labeled as truncated. Tables retain all returned rows. Dashboard exposes profile
+scope, assumptions and quality issues. Old saved responses are not rewritten.
 
-Dashboard results are cached in the user's session with dataset path, mtime,
-schema, provider name and service version in the key. A cached response marks
-`source=cache`, `cached=true`, `calls_this_request=0`; its retained invocation
-trace describes the original analysis. New uploads clear the cache and prior
-conversation context. Ask responses are not cached by this service.
+## Suggestions, caching and limits
 
-Provider invocation timeout is at most 25 seconds, with a 100-second service
-budget checked before each invocation. SDK retry/backoff can add overhead;
-this is not a hard wall-clock cancellation guarantee for an in-flight call.
-Large schemas (>100 columns), oversized context and results exceeding bounds
-fail explicitly rather than silently dropping columns/results.
+CSV suggestions come from the selected LLM or its cached dashboard follow-ups.
+Autocomplete only filters those existing questions; typing never triggers a
+model call and does not invent template metrics. Profile and suggestion caches
+include dataset identity; suggestion/dashboard caches include provider/model.
+Ask analysis itself is not cached. Disconnect clears CSV caches.
 
-## Verification and limits
+Traces expose provider, model, stage, status, duration, invocation count and SQL
+attempt count. Cached dashboard traces describe original generation and declare
+zero calls for the current request. Token usage and internal SDK network counts
+remain unknown. No success is fabricated after a model failure.
 
-Run without API credentials or optional ML packages:
+The service checks a 100-second budget before model calls, each capped at forty
+seconds or remaining time. Client Ask allows 120 seconds. SDK retry overhead is
+not a hard wall-clock guarantee. Profiles over 100 columns, excessive context,
+invalid output shapes and oversized results fail explicitly.
+
+## Validation and running
 
 ```powershell
 python -m unittest discover -s tests -p test_csv_llm_service.py -v
+python -m unittest discover -s tests -p test_provider_selection.py -v
 ```
 
-Tests use real temporary SQLite data and scripted provider responses. They
-exercise separate totals, grouping, clarification, bounded repair, provider
-failure, SQL authorization, output limits, NULLs, grounded numeric narration,
-cache invalidation, route persistence and failure/history isolation.
+Tests use real temporary SQLite databases and scripted model responses. They
+cover multi-query evidence, investigation/stop, SQL isolation, repaired output,
+profile quality, empty/dimension-only data, NULL/zero division, date coverage,
+cache invalidation, conversation clarification/history and provider failures.
+They do not measure live DeepSeek/OpenAI/Claude accuracy.
 
-These tests do not demonstrate live model quality. LLM semantics and qualitative
-claims can still be wrong; `verified=false` states this explicitly. Numeric cell
-references prevent invented literal numeric values, but do not prove that the
-model chose the right metric or described a referenced value correctly.
-
-After pulling, restart the backend with cloud consent enabled when using cloud.
-No frontend rebuild is needed. Open the existing CSV dashboard to trigger the
-new analysis; start a new question/conversation to test it. Old saved history
-does not get rewritten. For ARIA_Test_Sales.csv, verify totals 285000 revenue,
-90000 profit, 90 quantity and 30 orders, then a city grouping and an unknown
-metric clarification. Inspect `llm_trace` in Network responses and backend logs.
+Pull, build `aria-frontend` using `npm run build`, and restart the backend.
+Use your selected provider and model with backend cloud consent enabled.
+Try a broad overview, separate totals, city ranking, ratio, follow-up and absent
+field. For ARIA_Test_Sales.csv independently compare revenue 285000, profit
+90000, quantity 90 and 30 records. Inspect actual model traces and all result
+sets. Stronger models and these checks do not guarantee universally correct
+business conclusions.

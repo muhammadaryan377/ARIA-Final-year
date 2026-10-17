@@ -1717,6 +1717,16 @@ export default function Dashboard({ setPage, onAsk, user, connectionStatus = "no
           </section>
         )}
 
+        {config?.dataset_profile && <details className="rounded-2xl border border-border bg-card p-4 text-sm">
+          <summary className="cursor-pointer font-semibold">Dataset understanding and data quality</summary>
+          <p className="mt-3">{config.dataset_understanding?.description}</p>
+          {(config.dataset_understanding?.assumptions || []).map((text: string, i: number) => <p key={i} className="mt-1">Assumption: {text}</p>)}
+          <p className="text-xs text-muted-foreground mt-2">Profile scope: {config.dataset_profile.profile?.scope}. SQL analysis uses the connected dataset.</p>
+          {(config.quality?.issues || []).map((text: string, i: number) => <p key={i} className="mt-1 text-muted-foreground">{text}</p>)}
+          <p className="mt-2 text-xs text-muted-foreground">Metric meaning is AI-interpreted and has not been independently verified.</p>
+          <p className="mt-2 text-xs">{config.llm_trace?.cached ? "Cached analysis" : "Fresh analysis"} · {config.llm_trace?.provider}</p>
+        </details>}
+
         {/* ---- Main + rail grid ---- */}
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start min-w-0">
           <div className="min-w-0 space-y-5">

@@ -628,6 +628,15 @@ def _autocomplete(partial: str, limit: int, user: dict):
 
     session = get_session(user["user_id"])
 
+    from services.csv_llm_service import is_csv_session, cached_suggestions_csv
+    if is_csv_session(session):
+        # Typing never triggers model calls or substitutes template metrics.
+        questions = cached_suggestions_csv(session)
+        matches = [q for q in questions if not partial or partial.casefold() in q.casefold()]
+        return {"ok": True, "ready": bool(questions), "source": "llm_cache",
+                "suggestions": [{"text": q, "kind": "llm", "score": None} for q in matches[:limit]],
+                "index_summary": {"tables": 1, "values": 0}}
+
     # Even when not connected, the call should not 500 — return an
     # empty list so the frontend can keep working.
     if not session.get("db") and session.get("source_type") != "semi-structured":

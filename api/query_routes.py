@@ -350,6 +350,15 @@ def get_suggestions(request: Request, payload: dict | None = None, user: dict = 
         limit = 8
     # Cap to the 4-8 window.
     limit = max(4, min(8, limit))
+    from services.csv_llm_service import is_csv_session, suggestions_csv, CsvAnalysisError
+    if is_csv_session(session):
+        try:
+            result = suggestions_csv(session, user["user_id"], limit)
+        except CsvAnalysisError as exc:
+            raise HTTPException(status_code=502, detail={"message": str(exc), "llm_trace": exc.trace}) from None
+        save_session(user["user_id"], session)
+        return result
+
     try:
         # Read the schema mapping directly (no slow agent initialization) so
         # suggestions work instantly regardless of database size.
@@ -508,7 +517,9 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
         result["turn_number"] = len(history) + 1
         session["conversation_id"] = conv_id
         if result["status"] == "success":
-            history.append({"goal": req.goal, "sql": result["sql_used"], "columns": result["columns"]})
+            history.append({"goal": req.goal, "sql": result["sql_used"], "columns": result["columns"],
+                            "queries": [{"title": q["title"], "sql": q["sql"], "columns": q["columns"]}
+                                        for q in result.get("analysis_results", [])]})
             session["conversation_history"] = history[-10:]
             path = Path(session["processed_path"])
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -525,6 +536,9 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
                 columns=result["columns"], source_type=session.get("source_type"), db_name=session.get("db_name"),
                 dialect=session.get("dialect"), processed=result)
             session["pending_history_id"] = result["history_id"]
+        else:
+            history.append({"goal": req.goal, "clarification": result.get("message", "")})
+            session["conversation_history"] = history[-10:]
         save_session(user["user_id"], session)
         return result
     # Fail fast: never query the wrong DB. A relational session without a

@@ -933,7 +933,7 @@ export default function AIAnalytics({
   const prevDatasetRef = useRef<string | null>(null);
   const loadSuggestions = useCallback(async () => {
     try {
-      const data: any = await apiFetch("/copilot/suggestions");
+      const data: any = await apiFetch("/suggestions", { method: "POST", body: JSON.stringify({ limit: 4 }) });
       if (Array.isArray(data?.suggestions) && data.suggestions.length) setSuggestions(data.suggestions.slice(0, 4));
       else setSuggestions([]);
     } catch { /* keep previous chips on transient errors */ }
@@ -1085,6 +1085,7 @@ export default function AIAnalytics({
 
   /* ---- Result normalization (analyzeQuestion returns {success, data: goalData}) ---- */
   const gd = result?.data || result;  // goalData or raw
+  const csvResults: any[] = Array.isArray(gd?.analysis_results) ? gd.analysis_results : [];
   const answerMessage = strOf(gd?.answer || gd?.message || "");
   const findings: string[] = asList(gd?.findings || []).map((f: any) => strOf(typeof f === "string" ? f : f?.text)).filter(Boolean);
   const vizData = gd?.visualization?.data || gd?.data || [];
@@ -1463,8 +1464,39 @@ export default function AIAnalytics({
                     );
                   })()}
 
+                  {csvResults.map((item: any, index: number) => {
+                    const rows: any[] = item.data || [];
+                    const spec = item.chart_spec || {};
+                    const chartRows = rows.filter(row => typeof row[spec.y] === "number");
+                    return <Card key={index} className="p-5">
+                      <CardHead title={item.title} sub={item.reason} />
+                      {spec.chart_type !== "table" && spec.x && spec.y && chartRows.length > 0 && <div className="h-[260px] mt-3">
+                        <DynamicChart data={chartRows} chartSpec={spec} metric={spec.y} />
+                      </div>}
+                      {chartRows.length !== rows.length && spec.chart_type !== "table" && <p className="text-xs mt-2 text-muted-foreground">Unavailable values are omitted from the chart; see the table for all values.</p>}
+                      {rows.length > 60 && spec.chart_type !== "table" && <p className="text-xs mt-2 text-muted-foreground">Chart shows the first 60 available points. The table contains all returned rows.</p>}
+                      <div className="overflow-auto max-h-80 mt-3">
+                        {rows.length ? <table className="w-full text-xs"><thead><tr>{item.columns.map((col: string) => <th key={col} className="text-left p-2 border-b">{humanize(col)}</th>)}</tr></thead>
+                          <tbody>{rows.map((row: any, i: number) => <tr key={i}>{item.columns.map((col: string) => <td key={col} className="p-2 border-b">{row[col] == null ? "Unavailable (NULL)" : typeof row[col] === "number" ? row[col].toLocaleString(undefined, { maximumSignificantDigits: 12 }) : String(row[col])}</td>)}</tr>)}</tbody></table>
+                          : <p className="text-sm text-muted-foreground">No matching rows. This does not imply a zero total.</p>}
+                      </div>
+                      <details className="mt-3 text-xs"><summary className="cursor-pointer">How this was calculated</summary><pre className="overflow-auto whitespace-pre-wrap mt-2">{item.sql}</pre></details>
+                    </Card>;
+                  })}
+                  {gd?.dataset_understanding && <Card className="p-5 text-sm space-y-2">
+                    <p>{gd.dataset_understanding.description}</p>
+                    {(gd.dataset_understanding.assumptions || []).map((text: string, i: number) => <p key={i}>Assumption: {text}</p>)}
+                    {(gd.limitations || []).map((text: string, i: number) => <p key={i} className="text-muted-foreground">{text}</p>)}
+                    {gd.dataset_profile?.profile && <p className="text-xs text-muted-foreground">Data quality profile: {gd.dataset_profile.profile.scope}. Analysis queries use the connected dataset.</p>}
+                  </Card>}
+                  {gd?.llm_trace && <details className="text-xs text-muted-foreground rounded-xl border p-4">
+                    <summary className="cursor-pointer">AI execution details</summary>
+                    <p className="mt-2">Provider: {gd.llm_trace.provider} · {gd.llm_trace.cached ? "Cached result" : "Fresh analysis"} · Provider invocations: {gd.llm_trace.cached ? 0 : gd.llm_trace.provider_invocation_count}</p>
+                    {(gd.llm_trace.calls || []).map((call: any, i: number) => <p key={i}>{call.stage} · {call.model} · {call.duration_ms} ms · {call.status}</p>)}
+                  </details>}
+
                   {/* Chart — adapts to result type: chart for visual data, table for tabular, nothing for text-only */}
-                  {showChart && (
+                  {!csvResults.length && showChart && (
                     <Card className="p-5">
                       <CardHead title={chartSpec.label || (chartMetric ? `${humanize(chartMetric)} Analysis` : "Analysis Results")} sub={`${vizData.length} data points`} />
                       <div className="h-[260px] mt-3">
@@ -1474,7 +1506,7 @@ export default function AIAnalytics({
                   )}
 
                   {/* Table — for table-type results or when chart axes are missing but data exists */}
-                  {!showChart && vizData.length > 0 && (() => {
+                  {!csvResults.length && !showChart && vizData.length > 0 && (() => {
                     const keys = vizData.length > 0 ? Object.keys(vizData[0]).filter((k) => k !== "_idx") : [];
                     if (keys.length === 0) return null;
                     return (

@@ -230,6 +230,107 @@ class CsvLlmTests(unittest.TestCase):
         auth.add_history.assert_not_called()
         saved.assert_not_called()
 
+    def test_overview_executes_and_exposes_multiple_queries(self):
+        grouped = query('SELECT city AS city, SUM(profit) AS profit FROM facts GROUP BY city', ['profit'], ['city'], 'bar')
+        plan = {'status': 'ready', 'queries': [query(), grouped],
+                'understanding': {'description': 'Sales records', 'assumptions': [], 'limitations': []}}
+        p = self.provider(plan, {'answer': 'Revenue {{0:0:total_revenue}}. City {{1:0:city}} earned {{1:0:profit}}.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'can you tell me about my data something')
+        self.assertEqual(len(result['analysis_results']), 2)
+        self.assertEqual(len(result['evidence']), 2)
+        self.assertEqual(result['analysis_results'][1]['data'][1]['profit'], 90)
+        instructions = '\n'.join(m['content'] for m in p.calls[0][1] if m['role'] == 'system')
+        self.assertIn('without asking the user to pick a metric', instructions)
+        self.assertTrue(all(len(m['content']) <= 3000 for m in p.calls[0][1] if m['role'] == 'system'))
+
+    def test_investigation_uses_initial_evidence(self):
+        plan = {**PLAN, 'needs_investigation': True}
+        extra = {'status': 'ready', 'queries': [query('SELECT city AS city, SUM(profit) AS profit FROM facts GROUP BY city', ['profit'], ['city'], 'bar')]}
+        p = self.provider(plan, extra, {'answer': 'Total profit {{0:0:total_profit}}; {{1:1:city}} contributes {{1:1:profit}}.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'Explore profit distribution')
+        self.assertEqual(len(p.calls), 3)
+        self.assertEqual(result['llm_trace']['calls'][1]['stage'], 'investigation')
+        self.assertEqual(len(result['analysis_results']), 2)
+        self.assertIn('total_profit', ''.join(m['content'] for m in p.calls[1][1]))
+
+    def test_investigation_can_stop_without_more_queries(self):
+        self.provider({**PLAN, 'needs_investigation': True}, {'status': 'ready', 'queries': []}, STORY)
+        result = ask_csv(self.session, 7, 'Explore totals')
+        self.assertEqual(len(result['analysis_results']), 1)
+
+    def test_profile_missing_duplicates_and_no_raw_text_samples(self):
+        with sqlite3.connect(self.path) as conn:
+            conn.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [('private@example.com', None, 10, 20, None)] * 2)
+        ctx = _context(self.session)
+        self.assertEqual(ctx['profile']['duplicate_rows'], 1)
+        self.assertEqual(next(c for c in ctx['columns'] if c['name'] == 'profit')['null_count'], 2)
+        self.assertNotIn('private@example.com', json.dumps(ctx))
+        self.assertEqual(ctx['profile']['scope'], 'full dataset')
+
+    def test_profile_change_clears_old_semantic_context(self):
+        _context(self.session)
+        self.session['csv_dataset_understanding'] = {'description': 'Old context'}
+        with sqlite3.connect(self.path) as conn:
+            conn.execute('INSERT INTO facts VALUES("C",1,1,1,1)')
+        self.assertEqual(_context(self.session)['row_count'], 3)
+        self.assertNotIn('csv_dataset_understanding', self.session)
+
+    def test_empty_dataset_reports_count_not_invented_totals(self):
+        with sqlite3.connect(self.path) as conn: conn.execute('DELETE FROM facts')
+        self.provider({'status': 'ready', 'queries': [query('SELECT COUNT(*) AS records FROM facts', ['records'])]},
+            {'answer': 'There are {{0:0:records}} records.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'Summarize my data')
+        self.assertEqual(result['data'], [{'records': 0}])
+        self.assertEqual(result['dataset_profile']['row_count'], 0)
+
+    def test_dimension_only_dataset(self):
+        with sqlite3.connect(self.path) as conn:
+            conn.execute('CREATE TABLE categories(tag TEXT)')
+            conn.executemany('INSERT INTO categories VALUES(?)', [('red',), ('blue',), ('red',)])
+        self.session['db_name'] = 'categories'
+        plan = {'status': 'ready', 'queries': [query('SELECT tag AS tag, COUNT(*) AS records FROM categories GROUP BY tag ORDER BY records DESC', ['records'], ['tag'], 'bar')]}
+        self.provider(plan, {'answer': '{{0:0:tag}} has {{0:0:records}} records.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'Describe this data')
+        self.assertEqual(result['data'][0], {'tag': 'red', 'records': 2})
+
+    def test_zero_denominator_stays_unavailable(self):
+        self.provider({'status': 'ready', 'queries': [query('SELECT SUM(profit)/NULLIF(SUM(revenue-revenue),0) AS ratio FROM facts', ['ratio'])]},
+            {'answer': 'Ratio is {{0:0:ratio}}.', 'findings': [], 'followups': []})
+        self.assertIsNone(ask_csv(self.session, 7, 'Calculate ratio')['data'][0]['ratio'])
+
+    def test_date_coverage_can_be_text_scalar_results(self):
+        with sqlite3.connect(self.path) as conn:
+            conn.execute('ALTER TABLE facts ADD COLUMN recorded TEXT')
+            conn.execute("UPDATE facts SET recorded='2026-10-17'")
+        plan = {'status': 'ready', 'queries': [{'title': 'Coverage', 'reason': 'Observed date coverage',
+            'sql': 'SELECT MIN(recorded) AS start, MAX(recorded) AS end FROM facts',
+            'measures': [], 'dimensions': ['start', 'end'], 'chart': 'table', 'format': 'number'}]}
+        self.provider(plan, {'answer': 'Coverage is {{0:0:start}} through {{0:0:end}}.', 'findings': [], 'followups': []})
+        self.assertIn('2026-10-17', ask_csv(self.session, 7, 'What is the date range?')['answer'])
+
+    def test_too_many_queries_and_duplicate_queries_rejected(self):
+        for queries in ([query()] * 7, [query()] * 2):
+            self.provider({'status': 'ready', 'queries': queries}, {'status': 'ready', 'queries': queries})
+            with self.assertRaises(CsvAnalysisError): ask_csv(self.session, 7, 'Overview')
+
+    def test_llm_suggestions_cached_and_invalidated_by_model(self):
+        from services.csv_llm_service import suggestions_csv, cached_suggestions_csv
+        questions = ['Describe the dataset', 'Total profit?', 'Profit by city?', 'Quantity distribution?']
+        p = self.provider({'questions': questions})
+        self.assertEqual(suggestions_csv(self.session, 7)['suggestions'], questions)
+        self.assertEqual(suggestions_csv(self.session, 7)['source'], 'llm_cache')
+        self.assertEqual(len(p.calls), 1)
+        self.session['provider_models'] = {'cloud': {'semi': 'changed'}}
+        self.assertEqual(cached_suggestions_csv(self.session), [])
+
+    def test_clarification_is_kept_for_next_turn(self):
+        self.provider({'status': 'clarification', 'clarification': 'Which field represents age?'})
+        route, req, auth, saved, _ = self._ask_route()
+        result = route(None, req, {'user_id': 7})
+        self.assertEqual(self.session['conversation_history'][-1]['clarification'], result['message'])
+        auth.add_history.assert_not_called()
+        saved.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

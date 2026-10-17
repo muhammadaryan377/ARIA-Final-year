@@ -748,6 +748,7 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
   } catch { /* best-effort */ }
 
   const data = await request("/ask", {
+    timeoutMs: 120000,
     method: "POST",
     body: JSON.stringify(body),
     ...(options.signal ? { signal: options.signal } : {}),
@@ -774,6 +775,12 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
       : [];
 
   const goalData = {
+    analysis_results: Array.isArray(data?.analysis_results) ? data.analysis_results : [],
+    analysis_plan: data?.analysis_plan || null,
+    dataset_profile: data?.dataset_profile || null,
+    dataset_understanding: data?.dataset_understanding || null,
+    llm_trace: data?.llm_trace || null,
+    verdict: data?.verdict || null,
     interpretedGoal:
       data?.question ||
       data?.user_goal ||
