@@ -495,7 +495,8 @@ def switch_provider(request: ProviderSwitchRequest, user: dict = Depends(require
     if request.base_url and request.provider != "local":
         _validate_hosted_base_url(request.base_url)
     current = session.get("provider_name")
-    if current == request.provider:
+    if (current == request.provider and not request.api_key and not request.base_url
+            and session.get("provider") is not None and not session.get("_provider_error")):
         return {"ok": True, "provider": current, "changed": False}
 
     try:
@@ -528,6 +529,7 @@ def switch_provider(request: ProviderSwitchRequest, user: dict = Depends(require
 
     session["provider"] = llm
     session["provider_name"] = request.provider
+    session.pop("_provider_error", None)
     # Provider isolation: API keys are stored per hosted provider only.
     # Local (Ollama) uses no key, so a key sent with provider=local is ignored
     # rather than stored.
