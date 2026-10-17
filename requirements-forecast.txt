@@ -1,0 +1,8 @@
+# Optional forecasting extras: CPU-only torch for the LSTM/GRU models.
+# Install with: pip install -r requirements-forecast.txt
+# (Without torch, LSTM/GRU are skipped gracefully; everything else still works.)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+# Supply-chain note: torch==2.5.1+cpu is behind upstream — do NOT bump here
+# (CPU-wheel pin is intentional so forecast extras install cleanly).
+# When installed, verify for known vulns with: pip install pip-audit && pip-audit

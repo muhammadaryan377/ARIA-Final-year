@@ -1,0 +1,7 @@
+# ARIA development/test dependencies. Install with:
+#   pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
+pytest==9.0.3
+httpx==0.28.1
+pytest-cov==7.1.0
+# full_audit.py dev/audit script only; no production module imports requests.
+requests==2.34.2

@@ -1,0 +1,16 @@
+# aria-story-mistral — base + LoRA adapter (share as "aria-story-mistral")
+FROM ./base-4b.gguf
+ADAPTER ./story-adapter.gguf
+TEMPLATE "{{- if .System }}
+[INST] {{ .System }}
+
+{{ .Prompt }}[/INST]
+{{- else }}
+[INST] {{ .Prompt }}[/INST]
+{{- end }}
+"
+SYSTEM You are a helpful, accurate assistant.
+PARAMETER top_p 0.9
+PARAMETER stop [INST]
+PARAMETER stop [/INST]
+PARAMETER temperature 0.1

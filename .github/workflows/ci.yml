@@ -1,0 +1,202 @@
+name: aria-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-unit:
+    name: UNIT (pytest, fast hermetic suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime + dev dependencies (pinned via constraints)
+        run: pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
+      - name: Dependency vulnerability scan (pip-audit, blocking on High/Critical)
+        # Blocking gate: pip-audit exits non-zero on any reported vuln, which
+        # includes High/Critical. Triage by upgrading/pinning, or document a
+        # time-boxed exception with `--ignore-vuln <CVE>  # reason + expiry`.
+        run: pip install pip-audit && pip-audit
+      - name: Import check (all routers load from a clean checkout)
+        run: python -c "import app; print('routers:', len(app.app.routes))"
+      - name: Unit tests with coverage (prioritizes auth/llm-provider/analytics/schema/insights/DC/recommendation/SQL-validation/session-isolation)
+        # Threshold is intentionally modest (not 100%): the subset covering
+        # auth + session-isolation + DC flows alone measures ~18-25% TOTAL on
+        # the full module set, so 20% passes on the real suite while still
+        # failing a gutted one. TODO: raise the floor (e.g. 30-40%) after
+        # measuring a higher stable real-suite value over several green runs.
+        # --cov-report=term-missing names every uncovered line so the next
+        # raise is evidence-driven, not a guess.
+        run: >-
+          python -m pytest tests/ -q
+          --ignore=tests/e2e
+          --ignore=tests/test_e2e_full.py
+          --ignore=tests/test_walmart_e2e.py
+          --ignore=tests/test_adventureworks_integration.py
+          --cov=app --cov=auth --cov=core --cov=api --cov=copilot
+          --cov=prediction --cov=schema_engine --cov=insight_rag
+          --cov=csv_handler --cov=csv_orchestrator --cov=goal_agent
+          --cov=llm_provider --cov=insight_agent --cov=prescription_agent
+          --cov-report=xml --cov-report=term-missing
+          --cov-fail-under=20
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  backend-integration:
+    name: INTEGRATION (CSV journeys, no LLM, no live DB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime + dev dependencies (pinned via constraints)
+        run: pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
+      - name: Start app and probe health (clean-checkout boot check)
+        run: |
+          python app.py > /tmp/aria_boot.log 2>&1 &
+          SRV=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/api/health >/dev/null; then break; fi
+            sleep 5
+          done
+          if ! curl -sf http://127.0.0.1:8000/api/health >/dev/null; then
+            echo "Server failed to start after 150s"; cat /tmp/aria_boot.log; kill $SRV 2>/dev/null; exit 1
+          fi
+          HEALTH=$(curl -sf http://127.0.0.1:8000/api/health | head -c 300)
+          echo "$HEALTH"
+          if [ -z "$HEALTH" ]; then
+            echo "Health endpoint returned empty response"; kill $SRV 2>/dev/null; exit 1
+          fi
+          kill $SRV
+      - name: CSV-backed integration journeys (E2E_PROVIDER unset = LLM-free path only)
+        # test_e2e_full.py runs only its fast, LLM-free endpoints without
+        # E2E_PROVIDER; walmart/adventureworks files skip without their data.
+        # Gated live-DB tests skip explicitly without POSTGRES_TEST_URL /
+        # MYSQL_TEST_URL (no fake creds, no weakened auth).
+        run: python -m pytest tests/test_e2e_full.py tests/test_walmart_e2e.py tests/test_adventureworks_integration.py tests/test_relational_gated.py -q
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: aria-frontend
+    steps:
+      # Supply-chain hygiene (visibility-only pin): `uses:` tags below are
+      # intentionally kept as tags so CI resolution never breaks. To hard-pin,
+      # replace a tag with its commit SHA — lookup via:
+      #   gh api repos/actions/checkout/commits/v4 --jq .sha
+      #   gh api repos/actions/setup-node/commits/v4 --jq .sha
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: aria-frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Audit dependencies (non-blocking visibility)
+        # Visibility-only: `|| true` keeps CI green on new advisories.
+        # Triage High/Critical hits locally via `npm run audit:high`.
+        run: npm audit --audit-level=high || true
+      - name: Lint (JS/JSX; TS visibility-only via lint:ts, gated by typecheck until parser supports TS7)
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build release bundle (deployment must run this before FastAPI)
+        run: npm run build
+
+  e2e:
+    name: E2E (Playwright vs backend-served build on :8000)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: aria-frontend/package-lock.json
+      - name: Install backend deps
+        run: pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
+      - name: Install frontend deps + Playwright browsers
+        working-directory: aria-frontend
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: Typecheck + build (backend serves dist/ on :8000; canonical host)
+        working-directory: aria-frontend
+        run: npm run typecheck && npm run build
+      - name: Start backend on :8000 and probe health
+        run: |
+          python app.py > /tmp/aria_e2e.log 2>&1 &
+          echo $! > /tmp/aria_e2e.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/api/health >/dev/null; then break; fi
+            sleep 5
+          done
+          curl -sf http://127.0.0.1:8000/api/health | head -c 300
+      - name: List Playwright specs (must discover the converted suite)
+        working-directory: aria-frontend
+        env:
+          ARIA_BASE: http://localhost:8000
+        run: npx playwright test --list
+      - name: Run Playwright E2E against :8000 (no skips — failures fail the build)
+        working-directory: aria-frontend
+        env:
+          ARIA_BASE: http://localhost:8000
+        run: npx playwright test
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: aria-frontend/playwright-report
+      - name: Stop backend
+        if: always()
+        run: kill $(cat /tmp/aria_e2e.pid) 2>/dev/null || true
+
+  llm-e2e:
+    name: LLM-E2E (env-gated, explicit skip without creds)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime + dev dependencies (pinned via constraints)
+        run: pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
+      - name: Full LLM journey (E2E_PROVIDER=cloud|local) or explicit skip
+        run: |
+          if [ -z "${E2E_PROVIDER}" ]; then
+            echo "NOT EXECUTED — TEST CREDENTIALS UNAVAILABLE (E2E_PROVIDER unset; set cloud|local to run)"
+          else
+            python -m pytest tests/test_e2e_full.py -q
+          fi
+      - name: Gated live-DB regression (POSTGRES_TEST_URL / MYSQL_TEST_URL) or explicit skip
+        run: |
+          if [ -z "${POSTGRES_TEST_URL}" ] && [ -z "${MYSQL_TEST_URL}" ]; then
+            echo "NOT EXECUTED — TEST CREDENTIALS UNAVAILABLE (POSTGRES_TEST_URL / MYSQL_TEST_URL unset)"
+          fi
+          python -m pytest tests/test_relational_gated.py -q

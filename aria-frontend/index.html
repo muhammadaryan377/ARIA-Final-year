@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>aria-frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="bootdiag" style="display:none"></div>
+    <script>
+      // Collect every page error so the boot probe can show it (no DevTools needed).
+      window.__bootErrors = [];
+      window.addEventListener("error", function (e) {
+        try {
+          window.__bootErrors.push("ERR: " + (e.message || e.type) + " @ " + (e.filename || "?").split("/").pop() + ":" + (e.lineno || "?"));
+        } catch (_) {}
+      }, true);
+      window.addEventListener("unhandledrejection", function (e) {
+        try {
+          var r = e.reason;
+          window.__bootErrors.push("REJECT: " + (r && (r.message || r.detail || r)) );
+        } catch (_) {}
+      });
+      window.__classicOK = true;
+      try { document.getElementById("bootdiag").dataset.classic = "ran"; } catch (e) {}
+    </script>
+    <script type="module">
+      try { document.getElementById("bootdiag").dataset.module = "ran"; } catch (e) {}
+    </script>
+    <script>
+      // Boot probe: if React hasn't mounted content within 10s, show why
+      // instead of a silent white page (helps diagnose blocked scripts,
+      // broken storage, or mount crashes on the user's machine).
+      setTimeout(function () {
+        var root = document.getElementById("root");
+        if (root && root.innerHTML.length > 100) return;
+        var diag = document.getElementById("bootdiag");
+        var classicRan = window.__classicOK === true;
+        var moduleRan = diag && diag.dataset.module === "ran";
+        if (!classicRan) {
+          document.body.innerHTML =
+            '<div style="font-family:sans-serif;max-width:560px;margin:60px auto;padding:24px;color:#111">' +
+            '<h2>ARIA blocked</h2><p>Browser scripts are blocked for this site. ' +
+            'Disable ad-blocker/VPN for 127.0.0.1:5173 (frontend) and ensure the API at 127.0.0.1:8000 is reachable, or try another browser.</p></div>';
+          return;
+        }
+        if (!moduleRan) {
+          root.innerHTML =
+            '<div style="font-family:sans-serif;max-width:560px;margin:60px auto;padding:24px;color:#111">' +
+            '<h2>ARIA blocked: module scripts</h2>' +
+            '<p>Classic scripts run, but <b>type="module" scripts do not execute</b> in this browser. ' +
+            'This is usually caused by a script-blocking extension (NoScript, uMatrix, aggressive ad-blocker) ' +
+            'or a filtering VPN/proxy. Disable extensions for 127.0.0.1:5173 (or use Incognito with extensions off) and reload.</p></div>';
+          return;
+        }
+        try {
+          var keys = [];
+          try { for (var i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i)); } catch (e) { keys = ["storage-blocked"]; }
+          var errs = (window.__bootErrors || []).slice(0, 4);
+          root.innerHTML =
+            '<div style="font-family:sans-serif;max-width:560px;margin:60px auto;padding:24px;color:#111">' +
+            '<h2>ARIA did not start</h2>' +
+            '<p>Scripts ran (this message proves it). React failed to mount.</p>' +
+            '<p>Stored keys: ' + keys.join(", ") + '</p>' +
+            '<p>Page errors:<br>' + (errs.length ? errs.join("<br>") : "(none captured)") + '</p>' +
+            '<p>Try: hard refresh (Ctrl+Shift+R), then clear site data for 127.0.0.1:5173, then reload.</p>' +
+            '<p>If it persists, open DevTools (F12) → Console and send the red errors to support.</p></div>';
+        } catch (e) {
+          document.body.innerHTML =
+            '<div style="font-family:sans-serif;max-width:560px;margin:60px auto;padding:24px;color:#111">' +
+            '<h2>ARIA blocked</h2><p>Browser scripts/storage are blocked for this site. ' +
+            'Disable ad-blocker/VPN for 127.0.0.1:5173 or try another browser.</p></div>';
+        }
+      }, 10000);
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

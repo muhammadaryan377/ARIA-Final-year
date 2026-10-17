@@ -1,0 +1,16 @@
+# aria-sql-mistral — base + LoRA adapter (share as "aria-sql-mistral")
+FROM ./base-4b.gguf
+ADAPTER ./sql-adapter.gguf
+TEMPLATE "{{- if .System }}
+[INST] {{ .System }}
+
+{{ .Prompt }}[/INST]
+{{- else }}
+[INST] {{ .Prompt }}[/INST]
+{{- end }}
+"
+SYSTEM You are a helpful, accurate assistant.
+PARAMETER stop [INST]
+PARAMETER stop [/INST]
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9

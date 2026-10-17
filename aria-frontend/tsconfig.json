@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": false,
+    // Incremental strictness (step 1 of N): null-safety on, implicit-any
+    // off. Full `strict: true` still fails (~30 noImplicitAny + a few
+    // null-safety errors in AIAnalytics/Dashboard/Documents) — see TODO.
+    // TODO(strict): fix remaining implicit-any params (AIAnalytics,
+    // Dashboard), then flip strict:true and remove these two lines.
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    // Hygiene without strict:true: catches accidental switch fallthrough
+    // (safe: all switch cases in src return/throw; verified via typecheck).
+    // Full `strict: true` still stays OFF per the TODO below (would break build).
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["react", "react-dom"]
+  },
+  "include": ["src"]
+}

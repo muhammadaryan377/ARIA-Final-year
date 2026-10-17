@@ -1,0 +1,1 @@
+- [ARIA Project Layout](aria-project-layout.md) — active frontend (figma/), backend routes, security model, data sources, ports

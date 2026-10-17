@@ -1,0 +1,74 @@
+.env
+.env.*
+!.env.example
+kaggle_credentials.local.sh
+data/.jwt_secret
+.jwt_secret
+**/.jwt_secret
+data/*.db
+data/*.sqlite
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.zip
+.ipynb_checkpoints/
+wandb/
+outputs/
+aria-story-mistral-7b-lora/
+models/
+ft_story_data.jsonl
+ft_story_data_sample.jsonl
+
+# --- runtime outputs / artifacts (regenerated; keep the repo clean) ---
+data/
+uploads/
+artifacts/
+pro_images/
+test_embeddings_cache/
+test_processed/
+test_pdfs/
+test-results/
+*.docx
+*.log
+*_report.json
+insights*.json
+processed_data*.json
+tmp_*.json
+*.db
+*.sqlite
+# timestamped schema snapshots (keep the canonical *_latest.json)
+schema_mapping_*_20[0-9][0-9]*.json
+schema_mapping*.json
+.vscode/
+# local auth tokens / test credentials (never commit)
+.test_token.json
+aria_token.txt
+auth_tok.tmp
+*.tmp
+# archived dev scripts / old logs (not part of the build)
+_archive/
+server_e2e_live*.log
+e2e_*_out.log
+# pytest / playwright outputs (local only)
+.pytest_cache/
+playwright-report/
+playwright/.auth/
+test-results/
+# private keys / service accounts (never commit)
+*.pem
+*.key
+*.p12
+service-account*.json
+test_copilot_e2e.py
+# coverage outputs (local only)
+.coverage
+coverage.xml
+# local dev helpers with secrets (never commit)
+write_key.py
+check_groq.py
+check_cloud_complete.py
+groqkey.txt
+**/groqkey.txt
+test_cloud_ask.cjs
