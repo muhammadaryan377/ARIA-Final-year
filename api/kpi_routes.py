@@ -872,6 +872,18 @@ def get_dashboard_config(request: Request, user: dict = Depends(get_current_user
     import time as _time
 
     session = get_session(user["user_id"])
+    from services.csv_llm_service import is_csv_session, dashboard, CsvAnalysisError
+    if is_csv_session(session):
+        from core.config import save_session
+        try:
+            config = dashboard(session, user["user_id"])
+            save_session(user["user_id"], session)
+            return {"ok": True, "config": config, "cached": config["llm_trace"]["cached"]}
+        except CsvAnalysisError as exc:
+            raise HTTPException(status_code=502, detail={"message": str(exc), "llm_trace": exc.trace}) from None
+        except Exception:
+            logging.exception("CSV dashboard LLM analysis failed")
+            raise HTTPException(status_code=502, detail="CSV AI dashboard could not complete. No template dashboard was substituted.") from None
     intel = _load_schema(session, user["user_id"])
     if not intel or not intel.tables:
         _empty_config = {

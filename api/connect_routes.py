@@ -970,9 +970,14 @@ def _finish_csv_connect(*, file_path, upload_dir, safe_name, stamp, filename,
     session["insights_path"] = _upaths["insights_dir"] / f"insights_{safe_db_name}.json"
     session["dialect"] = "sqlite"
     session["file_type"] = "csv"
+    # The upload remains a deterministic import. AI planning is an explicit
+    # dashboard request, so its failure cannot discard a successfully imported CSV.
+    session.pop("csv_llm_dashboard", None)
+    session.pop("conversation_id", None)
+    session.pop("conversation_history", None)
     save_session(uid, session)
 
-    _set_progress(uid, "generating", 90, "Generating insights...")
+    _set_progress(uid, "generating", 90, "Saving imported data; AI analysis runs when the dashboard opens...")
     columns = [c["column"] for c in mapping["tables"][table_name]["columns"]]
     quality = mapping["tables"][table_name]["csv_profile"]["quality"]
     result = {

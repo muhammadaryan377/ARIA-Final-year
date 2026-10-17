@@ -487,6 +487,46 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
     """
     session = get_session(user["user_id"])
     provider = require_data(request)
+    from services.csv_llm_service import is_csv_session, ask_csv, CsvAnalysisError
+    if is_csv_session(session):
+        import uuid
+        import os
+        import tempfile
+        conv_id = req.conversation_id or session.get("conversation_id") or f"conv_{uuid.uuid4().hex}"
+        history = session.get("conversation_history", []) if conv_id == session.get("conversation_id") else []
+        try:
+            result = ask_csv(session, user["user_id"], req.goal, history=history,
+                             request_context={"metric": req.metric, "filters": req.filters,
+                                              "time_range": req.time_range, "grouping": req.grouping,
+                                              "previous_goal": req.previous_goal})
+        except CsvAnalysisError as exc:
+            raise HTTPException(status_code=502, detail={"message": str(exc), "llm_trace": exc.trace}) from None
+        except Exception:
+            log.exception("CSV LLM analysis failed")
+            raise HTTPException(status_code=502, detail="CSV AI analysis could not complete. No fallback answer was generated.") from None
+        result["conversation_id"] = conv_id
+        result["turn_number"] = len(history) + 1
+        session["conversation_id"] = conv_id
+        if result["status"] == "success":
+            history.append({"goal": req.goal, "sql": result["sql_used"], "columns": result["columns"]})
+            session["conversation_history"] = history[-10:]
+            path = Path(session["processed_path"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(dir=path.parent, suffix=".json")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(result, stream, ensure_ascii=False, allow_nan=False)
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            result["history_id"] = auth.add_history(
+                user["user_id"], goal=req.goal, sql_used=result["sql_used"], row_count=result["row_count"],
+                columns=result["columns"], source_type=session.get("source_type"), db_name=session.get("db_name"),
+                dialect=session.get("dialect"), processed=result)
+            session["pending_history_id"] = result["history_id"]
+        save_session(user["user_id"], session)
+        return result
     # Fail fast: never query the wrong DB. A relational session without a
     # rebuilt db_uri (undecryptable/missing credentials) must reconnect.
     if session.get("source_type") == "relational" and not session.get("db_uri"):
