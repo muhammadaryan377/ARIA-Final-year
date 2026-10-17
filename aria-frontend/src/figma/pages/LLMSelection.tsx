@@ -72,7 +72,9 @@ export default function LLMSelection({ onSelectLLM }: LLMSelectionProps) {
       return;
     }
     const st = selected ? status[selected] : undefined;
-    if (st && !st.available) {
+    // Availability describes the saved key; validate a newly entered key on the backend.
+    const hasNewCloudKey = selected === "cloud" && Boolean(groqKey.trim());
+    if (st && !st.available && !hasNewCloudKey) {
       setError(`${st.reason} You can retry the status check or choose the other engine.`);
       return;
     }
