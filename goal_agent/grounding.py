@@ -523,6 +523,10 @@ class GroundingMixin:
         look for a fact table with BOTH a quantity and a unit-price column and
         synthesize quantity * unit_price.  Also includes discount when present.
         Generic, schema-driven, no DB names."""
+        # Quantity times selling price estimates revenue, never profit/margin.
+        # Do not replace a matched profit column with a revenue expression.
+        if not set(concept_tokens or ()) & {"revenue", "sales"}:
+            return None
         for table in relevant:
             info = self.tables.get(table, {})
             cols = list(info.get("columns", {}))
@@ -1554,7 +1558,7 @@ class GroundingMixin:
                             list(relevant) + _all_tables, tokens)
                     except Exception:
                         computed = None
-                if not computed and monetary_bias:
+                if not computed and monetary_bias and concept != "profit kpi":
                     # Money-preferred fallback across the whole schema:
                     # first safe total/amount/sales-like column, never
                     # cost/fuel/id/counts. Generic, no DB names.
