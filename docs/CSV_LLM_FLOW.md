@@ -1,4 +1,4 @@
-# CSV analyst flow (version 3)
+# CSV analyst flow (version 4)
 
 Scope: CSV Dashboard, AI Analytics Ask, suggested questions, autocomplete and
 conversation persistence. Relational/PDF analytics and dedicated Copilot,
@@ -124,3 +124,25 @@ The resolved question is used by planning and explanation and displayed in the
 UI as Interpreted as. This adds a provider invocation per follow-up; scripted
 regression tests verify orchestration and filtered SQL results, not live model
 semantic accuracy.
+
+## Statistical discovery (version 4)
+
+Implementation now lives in `csv_engine/`; former entrypoints are compatibility
+aliases. See its README for the module map. Existing data/history is unchanged.
+The model chooses distribution, robust outliers, Spearman relationships,
+group-versus-rest comparisons and daily change tools. Six combined SQL/tool
+steps (at most three tools) are allowed initially, plus two investigation steps.
+Statistics use the first 10,000 matching rows, explicitly not a random sample;
+SQL aggregates use the full connected dataset. Tool filters use bound parameters.
+
+Methods, scope and limitations accompany each result in Ask and Dashboard.
+Benjamini-Hochberg adjustment covers comparisons within each invocation, not an
+entire adaptive investigation. Small groups/constant columns can be insufficient.
+Daily changes require ISO dates and sufficient adjacent dates; seasonality and
+incomplete periods are not modeled. Outliers are candidates, not confirmed errors
+or fraud. No candidates does not establish that no anomalies exist. Semantic
+interpretations remain unverified. Actual computation regression tests:
+
+```powershell
+python -m unittest discover -s tests -p test_csv_statistics.py -v
+```

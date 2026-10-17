@@ -1,3 +1,4 @@
+import CsvStatisticalEvidence from "../components/CsvStatisticalEvidence";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { ArrowRight, ArrowUpRight, ArrowDownRight, Zap, Search, AlertTriangle, ChevronRight, RefreshCw, Database, DollarSign, Store, CalendarDays, Percent, TrendingUp, Users, ShoppingCart, RotateCcw, X, Sparkles, MessageSquare, Send, Lightbulb, Shield, BarChart3, GitBranch, Sun, FileText } from "lucide-react";
 import { AreaChart, Area, Line, BarChart, Bar, Cell, PieChart, Pie, ResponsiveContainer, Tooltip, CartesianGrid, XAxis, YAxis, Brush, ReferenceDot, ScatterChart, Scatter, ZAxis } from "recharts";
@@ -1726,6 +1727,12 @@ export default function Dashboard({ setPage, onAsk, user, connectionStatus = "no
           <p className="mt-2 text-xs text-muted-foreground">Metric meaning is AI-interpreted and has not been independently verified.</p>
           <p className="mt-2 text-xs">{config.llm_trace?.cached ? "Cached analysis" : "Fresh analysis"} · {config.llm_trace?.provider}</p>
         </details>}
+
+        {(config?.statistical_insights || []).map((result: any, index: number) => <section key={index} className="rounded-2xl border border-border bg-card p-4">
+          <h3 className="font-semibold">{result.title}</h3>
+          <p className="text-sm text-muted-foreground mt-1">{result.reason}</p>
+          <CsvStatisticalEvidence result={result} showTable />
+        </section>)}
 
         {/* ---- Main + rail grid ---- */}
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start min-w-0">

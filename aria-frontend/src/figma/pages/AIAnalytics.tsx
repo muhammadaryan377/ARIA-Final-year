@@ -1,3 +1,4 @@
+import CsvStatisticalEvidence from "../components/CsvStatisticalEvidence";
 /* AI Analytics — Dashboard home + inline analysis results.
    Search bar and popular actions call /api/ask (Goal Agent) and display
    chart + insights + table directly on the page. No copilot redirect. */
@@ -1496,9 +1497,10 @@ export default function AIAnalytics({
                       <div className="overflow-auto max-h-80 mt-3">
                         {rows.length ? <table className="w-full text-xs"><thead><tr>{item.columns.map((col: string) => <th key={col} className="text-left p-2 border-b">{humanize(col)}</th>)}</tr></thead>
                           <tbody>{rows.map((row: any, i: number) => <tr key={i}>{item.columns.map((col: string) => <td key={col} className="p-2 border-b">{row[col] == null ? "Unavailable (NULL)" : typeof row[col] === "number" ? row[col].toLocaleString(undefined, { maximumSignificantDigits: 12 }) : String(row[col])}</td>)}</tr>)}</tbody></table>
-                          : <p className="text-sm text-muted-foreground">No matching rows. This does not imply a zero total.</p>}
+                          : !item.statistical_evidence && <p className="text-sm text-muted-foreground">No matching rows. This does not imply a zero total.</p>}
                       </div>
-                      <details className="mt-3 text-xs"><summary className="cursor-pointer">How this was calculated</summary><pre className="overflow-auto whitespace-pre-wrap mt-2">{item.sql}</pre></details>
+                      <CsvStatisticalEvidence result={item} />
+                      {item.sql && <details className="mt-3 text-xs"><summary className="cursor-pointer">How this was calculated</summary><pre className="overflow-auto whitespace-pre-wrap mt-2">{item.sql}</pre></details>}
                     </Card>;
                   })}
                   {gd?.dataset_understanding && <Card className="p-5 text-sm space-y-2">
@@ -1510,6 +1512,7 @@ export default function AIAnalytics({
                   {gd?.llm_trace && <details className="text-xs text-muted-foreground rounded-xl border p-4">
                     <summary className="cursor-pointer">AI execution details</summary>
                     <p className="mt-2">Provider: {gd.llm_trace.provider} · {gd.llm_trace.cached ? "Cached result" : "Fresh analysis"} · Provider invocations: {gd.llm_trace.cached ? 0 : gd.llm_trace.provider_invocation_count}</p>
+                    <p>Statistical tool invocations: {gd.llm_trace.statistical_tool_count || 0}</p>
                     {(gd.llm_trace.calls || []).map((call: any, i: number) => <p key={i}>{call.stage} · {call.model} · {call.duration_ms} ms · {call.status}</p>)}
                   </details>}
 
