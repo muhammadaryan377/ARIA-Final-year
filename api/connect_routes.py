@@ -1059,8 +1059,12 @@ def connect_file(provider: str | None = Form(None), file: UploadFile = File(...)
             detail="Only .csv files are accepted for file sources right now. "
                    "Tabular PDF extraction is not available in this build.",
         )
+    session = get_session(user["user_id"])
+    # CSV uploads reuse the authenticated user's selected hosted-provider key.
+    # Local providers must never inherit a saved cloud key.
+    saved_key = (session.get("api_keys") or {}).get(provider) if provider in HOSTED_PROVIDERS else None
     try:
-        llm = create_provider(provider=provider, api_key=llm_api_key, base_url=llm_base_url)
+        llm = create_provider(provider=provider, api_key=llm_api_key or saved_key, base_url=llm_base_url)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not initialise '{provider}' LLM provider: {exc}")
 
