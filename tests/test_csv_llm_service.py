@@ -367,5 +367,37 @@ class CsvLlmTests(unittest.TestCase):
         self.assertIn('500', result['findings'][0])
 
 
+    def test_current_chat_followup_receives_prior_answer_and_values(self):
+        p = self.provider(PLAN, STORY, PLAN, STORY)
+        route, req, _, _, _ = self._ask_route()
+        route(None, req, {'user_id': 7})
+        req.goal = 'What were those totals again?'
+        result = route(None, req, {'user_id': 7})
+        self.assertEqual(result['turn_number'], 2)
+        messages = ''.join(m['content'] for m in p.calls[2][1] if m['role'] == 'user')
+        self.assertIn('Revenue is 500 and profit is 150.', messages)
+        self.assertIn('sample_results', messages)
+
+    def test_new_chat_and_dataset_change_do_not_inherit_history(self):
+        p = self.provider(PLAN, STORY, PLAN, STORY, PLAN, STORY)
+        route, req, _, _, _ = self._ask_route()
+        route(None, req, {'user_id': 7})
+        req.conversation_id = 'another-chat'
+        self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 1)
+        req.conversation_id = 'new-conversation'
+        with sqlite3.connect(self.path) as conn:
+            conn.execute('INSERT INTO facts VALUES("C",1,1,1,1)')
+        self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 1)
+
+    def test_returning_to_existing_chat_restores_only_its_context(self):
+        self.provider(PLAN, STORY, PLAN, STORY, PLAN, STORY)
+        route, req, _, _, _ = self._ask_route()
+        route(None, req, {'user_id': 7})
+        req.conversation_id = 'second-chat'
+        route(None, req, {'user_id': 7})
+        req.conversation_id = 'new-conversation'
+        self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 2)
+
+
 if __name__ == '__main__':
     unittest.main()

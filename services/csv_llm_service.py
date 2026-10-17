@@ -262,6 +262,31 @@ Also return "understanding":{"description":"what a row appears to represent", "a
 QUERY = {"title":"short meaningful label", "sql":"one read-only SQLite SELECT", "measures":["numeric output alias"], "dimensions":["grouping output alias"], "chart":"table"|"bar"|"line", "format":"number", "reason":"why these source columns answer the question"}. Explicitly alias every output column. Measures and dimensions must be disjoint and cover all output columns. Ungrouped totals have NO dimensions and chart table. Dashboard KPI queries return one numeric column and one row, with no dimensions; chart queries return one dimension and one measure. Include COUNT(*) where useful. Do not return SELECT *, internal tables, or external data. At most 200 result rows. Preserve NULLs. For multiple totals use separate correct aggregates in one question query. Comparisons require actual SQL evidence; never assume a default comparison period. Return format number because the source does not establish currency. Any values in the final explanation will come from executed results."""
 
 
+def conversation_turn(question, result):
+    """Bounded user-owned context, including actual prior values, not just SQL."""
+    queries = []
+    for q in result.get("analysis_results", [])[:8]:
+        rows = [{str(k): (v[:100] if isinstance(v, str) else v) for k, v in list(row.items())[:8]}
+                for row in q.get("data", [])[:2]]
+        queries.append({"title": q.get("title"), "sql": q.get("sql", "")[:1500],
+                        "columns": q.get("columns", []), "sample_results": rows,
+                        "result_row_count": len(q.get("data", []))})
+    return {"goal": question, "answer": result.get("answer", "")[:1500],
+            "sql": result.get("sql_used"), "columns": result.get("columns", []),
+            "queries": queries, "clarification": result.get("message") if result.get("status") == "clarification" else None,
+            "context_note": "Prior results are bounded excerpts; rerun SQL for omitted values or new calculations."}
+
+
+def _bounded_history(history):
+    turns = copy.deepcopy((history or [])[-4:])
+    while len(turns) > 1 and len(json.dumps(turns, ensure_ascii=False)) > 18000:
+        turns.pop(0)
+    if turns and len(json.dumps(turns, ensure_ascii=False)) > 18000:
+        turns[-1].pop("queries", None)
+        turns[-1]["context_note"] = "Prior query details omitted for context budget; use question and answer and rerun needed SQL."
+    return turns
+
+
 def _plan(run, session, context, question, history=None, dashboard=False, request_context=None, previous=None):
     def validate(obj):
         if not isinstance(obj, dict) or obj.get("status") not in ("ready", "clarification"):
@@ -319,7 +344,7 @@ def _plan(run, session, context, question, history=None, dashboard=False, reques
                          {"task": "follow-up" if previous else ("dashboard" if dashboard else "question"), "schema": context,
                           "executed_queries": (previous or {}).get("queries", []),
                           "shared_understanding": session.get("csv_dataset_understanding", {}),
-                          "question": question, "history": (history or [])[-4:],
+                          "question": question, "history": _bounded_history(history),
                           "explicit_request_context": request_context or {}}, validate)
 
 

@@ -689,6 +689,13 @@ const deriveGoalType = (data) => {
 // GOAL AGENT
 // =========================================================
 
+/**
+ * @param {string} question
+ * @param {unknown} llmMode
+ * @param {Record<string, any>} sourceContext
+ * @param {{conversationId?: string, previousGoal?: string, previousResult?: any} | null} multiTurnContext
+ * @param {Record<string, any>} options
+ */
 export const analyzeQuestion = async (question, llmMode, sourceContext = {}, multiTurnContext = null, options = {}) => {
   void llmMode;
 
@@ -730,7 +737,7 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
     const sharedDs = shared && typeof shared === "object"
       ? normDs(shared.dataset || shared.table || (shared.source && shared.source.tables && shared.source.tables[0]))
       : "";
-    if (shared && typeof shared === "object" && (!explicitDs || !sharedDs || sharedDs === explicitDs)) {
+    if (options.useSharedContext !== false && shared && typeof shared === "object" && (!explicitDs || !sharedDs || sharedDs === explicitDs)) {
       if (!body.metric && shared.metric) body.metric = shared.metric;
       if (!body.grouping && (shared.dimensions || shared.dimension)) {
         body.grouping = shared.dimensions || shared.dimension;

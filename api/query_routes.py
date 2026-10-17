@@ -496,13 +496,16 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
     """
     session = get_session(user["user_id"])
     provider = require_data(request)
-    from services.csv_llm_service import is_csv_session, ask_csv, CsvAnalysisError
+    from services.csv_llm_service import is_csv_session, ask_csv, CsvAnalysisError, conversation_turn, _fingerprint
     if is_csv_session(session):
         import uuid
         import os
         import tempfile
         conv_id = req.conversation_id or session.get("conversation_id") or f"conv_{uuid.uuid4().hex}"
-        history = session.get("conversation_history", []) if conv_id == session.get("conversation_id") else []
+        dataset_identity = _fingerprint(session)
+        conversations = dict(session.get("csv_conversations", {}))
+        active = conversations.get(conv_id, {})
+        history = list(active.get("history", [])) if active.get("dataset") == dataset_identity else []
         try:
             result = ask_csv(session, user["user_id"], req.goal, history=history,
                              request_context={"metric": req.metric, "filters": req.filters,
@@ -517,9 +520,7 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
         result["turn_number"] = len(history) + 1
         session["conversation_id"] = conv_id
         if result["status"] == "success":
-            history.append({"goal": req.goal, "sql": result["sql_used"], "columns": result["columns"],
-                            "queries": [{"title": q["title"], "sql": q["sql"], "columns": q["columns"]}
-                                        for q in result.get("analysis_results", [])]})
+            history.append(conversation_turn(req.goal, result))
             session["conversation_history"] = history[-10:]
             path = Path(session["processed_path"])
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -537,8 +538,11 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
                 dialect=session.get("dialect"), processed=result)
             session["pending_history_id"] = result["history_id"]
         else:
-            history.append({"goal": req.goal, "clarification": result.get("message", "")})
+            history.append(conversation_turn(req.goal, result))
             session["conversation_history"] = history[-10:]
+        conversations.pop(conv_id, None)
+        conversations[conv_id] = {"dataset": dataset_identity, "history": history[-10:]}
+        session["csv_conversations"] = dict(list(conversations.items())[-8:])
         save_session(user["user_id"], session)
         return result
     # Fail fast: never query the wrong DB. A relational session without a

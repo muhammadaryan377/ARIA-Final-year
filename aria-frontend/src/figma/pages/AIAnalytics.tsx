@@ -908,6 +908,7 @@ export default function AIAnalytics({
   const [followUpQuery, setFollowUpQuery] = useState("");
   const [history, setHistory] = useState<{ q: string; r: any }[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const conversationRef = useRef<string>(crypto.randomUUID());
 
   /* ---- Autocomplete ---- */
   const [acOptions, setAcOptions] = useState<string[]>([]);
@@ -942,6 +943,8 @@ export default function AIAnalytics({
     loadSuggestions();
     if (prevDatasetRef.current !== null && prevDatasetRef.current !== datasetKey) {
       abortRef.current?.abort();
+      conversationRef.current = crypto.randomUUID();
+      setRunning(false);
       setResult(null); setError(""); setHistory([]); setAskedQuestion("");
       setSearchQuery(""); setFollowUpQuery(""); setAcOptions([]); setAcOpen(false);
       setSidebarCtx({});
@@ -1037,7 +1040,7 @@ export default function AIAnalytics({
     abortRef.current?.abort();
     const ctrl = new AbortController(); abortRef.current = ctrl;
     try {
-      const data = await analyzeQuestion(q, null, { dataset: datasetKey || undefined }, null, { signal: ctrl.signal, timeoutMs: 120000 });
+      const data = await analyzeQuestion(q, null, { dataset: datasetKey || undefined }, { conversationId: conversationRef.current }, { signal: ctrl.signal, timeoutMs: 120000, useSharedContext: false });
       if (ctrl.signal.aborted) return;
       setResult(data);
       setSidebarCtx({ metric: data?.analytics_envelope?.metric || data?.display?.metric, breakdown: (data?.analytics_envelope?.dimensions || [])[0] });
@@ -1045,7 +1048,7 @@ export default function AIAnalytics({
     } catch (e: any) {
       if (e?.name === "AbortError") return;
       setError(e?.message || "Could not analyze this question.");
-    } finally { setRunning(false); }
+    } finally { if (abortRef.current === ctrl) setRunning(false); }
   }, [running, datasetKey]);
 
   /* ---- Follow-up submit ---- */
@@ -1081,7 +1084,12 @@ export default function AIAnalytics({
   };
 
   /* ---- Back to home ---- */
-  const goHome = () => { setResult(null); setError(""); setHistory([]); setAskedQuestion(""); };
+  const goHome = () => {
+    abortRef.current?.abort(); abortRef.current = null;
+    conversationRef.current = crypto.randomUUID();
+    setRunning(false); setResult(null); setError(""); setHistory([]); setAskedQuestion("");
+    setSearchQuery(""); setFollowUpQuery(""); setSidebarCtx({});
+  };
 
   /* ---- Result normalization (analyzeQuestion returns {success, data: goalData}) ---- */
   const gd = result?.data || result;  // goalData or raw
@@ -1272,7 +1280,7 @@ export default function AIAnalytics({
                     <Plus size={14} /> New analysis
                   </button>
                 ) : (
-                  <button onClick={() => gotoTab("explore")} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12.5px] font-semibold text-white bg-blue-700 hover:bg-blue-800 transition-colors">
+                  <button onClick={goHome} className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12.5px] font-semibold text-white bg-blue-700 hover:bg-blue-800 transition-colors">
                     <Plus size={14} /> New analysis
                   </button>
                 )}
@@ -1394,6 +1402,15 @@ export default function AIAnalytics({
               {/* Answer + Chart + Insights */}
               {!running && !error && result && (
                 <div className="space-y-4 chart-reveal">
+                  {history.length > 1 && <details className="rounded-xl border border-border p-4 text-sm">
+                    <summary className="cursor-pointer font-semibold">Current chat · {history.length} turns</summary>
+                    {history.slice(0, -1).map((turn, index) => <div key={index} className="mt-3 border-t pt-3">
+                      <p className="font-medium">You: {turn.q}</p>
+                      <p className="mt-1 text-muted-foreground">ARIA: {turn.r?.data?.answer || turn.r?.data?.message || turn.r?.answer || turn.r?.message}</p>
+                      <button type="button" className="mt-1 text-xs underline" onClick={() => { setResult(turn.r); setAskedQuestion(turn.q); }}>View this result</button>
+                    </div>)}
+                    <p className="mt-3 text-xs text-muted-foreground">Follow-ups use the latest conversation context. New analysis starts a separate chat.</p>
+                  </details>}
                   {/* Asked question — stays until the user dismisses it */}
                   {askedQuestion && (
                     <div className="flex items-start gap-2.5 rounded-xl border border-border bg-secondary/70 px-4 py-3">

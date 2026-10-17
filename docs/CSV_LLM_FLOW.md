@@ -103,3 +103,16 @@ can render as tables; a multi-measure scalar dashboard query yields separate
 cards without changing SQL or calculated values. Missing format defaults to
 number, without inferring currency. Live failure causes from earlier logs cannot
 be determined retroactively because those logs did not include validation reasons.
+
+## Current-chat context
+
+AI Analytics sends an explicit conversation ID on each turn and disables the
+shared cross-page metric/filter fallback. New analysis aborts the active UI
+request and allocates a fresh ID; a dataset change also resets the chat.
+The session stores up to eight CSV conversations, each bound to its dataset
+fingerprint, with ten turns each. The planner receives up to four recent turns
+within a bounded context budget, including prior answers and small result
+excerpts; omitted results require fresh SQL. Clarifications are included.
+Previous turns can be inspected in the current-chat panel. A page reload or
+remount starts a new UI chat; restoring full conversations from Recent is not
+part of this change. Successful analyses still persist in the history database.

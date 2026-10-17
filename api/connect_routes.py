@@ -1465,7 +1465,7 @@ def disconnect_source(user: dict = Depends(require_writable)):
         "document_id", "document_name", "document_type", "linked_db",
         "conversation_id", "conversation_history",
         "pending_history_id", "schemas", "db_type",
-        "csv_llm_dashboard", "csv_llm_suggestions", "csv_dataset_profile", "csv_dataset_understanding",
+        "csv_llm_dashboard", "csv_llm_suggestions", "csv_dataset_profile", "csv_dataset_understanding", "csv_conversations",
     ):
         session.pop(key, None)
     save_session(user["user_id"], session)
