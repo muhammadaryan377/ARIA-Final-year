@@ -23,7 +23,7 @@ def normalize(strength: str, n_support: int = 0, n_against: int = 0) -> str:
     s = (strength or "").strip()
     if s not in _RANK:
         s = "Insufficient evidence"
-    if n_against > 0 and n_against >= max(1, n_support) and n_support <= 1:
+    if n_against > n_support:
         return "Contradictory evidence"
     return s
 

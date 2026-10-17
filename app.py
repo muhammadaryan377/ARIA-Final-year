@@ -47,6 +47,10 @@ from fastapi import Depends as _Depends  # noqa: E402
 async def lifespan(app: FastAPI):
     """Run startup checks; failures stay visible but never crash import."""
     import logging
+    import auth
+    # Secret resolution is lazy at import, but invalid production credentials
+    # must still fail startup before accepting requests.
+    auth._signing_secret()
     report = run_checks()
     critical = report["critical"]
     if critical:

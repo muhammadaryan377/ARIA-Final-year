@@ -165,5 +165,8 @@ else:
         return plaintext
 
     def decrypt(ciphertext: str) -> str:
-        # Never raise on plaintext passthrough; never log the value.
+        # A Windows ciphertext is not a usable password on another OS.
+        # Plaintext migration stays compatible; encrypted values fail loudly.
+        if is_encrypted(ciphertext):
+            raise RuntimeError("Windows-encrypted secret cannot be decrypted on this platform.")
         return ciphertext

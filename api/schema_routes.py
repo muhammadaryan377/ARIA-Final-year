@@ -36,7 +36,7 @@ def _extract_schema_impl(request: Request, user: dict, db_type: str = "postgresq
                 detail="This source is a text document — use Document Chat "
                        "(Copilot) instead of schema analytics.",
             )
-        mapping = json.loads(_sp.read_text(encoding="utf-8"))
+        mapping = json.loads(Path(_sp).read_text(encoding="utf-8"))
         return {
             "ok": True,
             "provider": session["provider_name"],
@@ -149,6 +149,7 @@ def _extract_schema_impl(request: Request, user: dict, db_type: str = "postgresq
         path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
 
     session["schema_path"] = latest_path
+    session["schema_status"] = "ok" if mapping.get("tables") else "empty"
     save_session(user["user_id"], session)
 
     summary = mapping.get("summary", {})

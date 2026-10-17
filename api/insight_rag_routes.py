@@ -45,22 +45,21 @@ def _capability(user_id: str | int) -> InsightPDFRAG:
     provider's model names.
     """
     from core.config import get_session, resolve_provider_key
-    try:
-        _session = get_session(int(user_id))
-    except Exception:
-        _session = {}
+    _session = get_session(int(user_id))
     _pname = (_session.get("provider_name") or "local")
     if _pname == "local" and not _session.get("provider_name"):
         logging.getLogger("aria.insight_rag").warning(
             "provider_name missing from session – falling back to local"
         )
     if _pname not in ("local", "cloud", "deepseek", "omniroute", "grok"):
-        _pname = "deepseek"
+        raise HTTPException(status_code=503, detail="Selected AI provider is not supported.")
     if _pname == "deepseek":
         provider = create_provider(
             "deepseek",
+            api_key=resolve_provider_key("deepseek", _session.get("api_keys") or {}),
             models={
                 "rag": RAG_LLM_MODEL,
+                "rag_scope": RAG_LLM_MODEL,
                 "rag_rewrite": RAG_LLM_MODEL,
                 "rag_verify": RAG_LLM_MODEL,
                 "rag_plan": RAG_LLM_MODEL,
@@ -110,7 +109,12 @@ def pdf_rag_health(user: dict = Depends(require_writable)):
         str((document.get("ingestion_quality") or {}).get("grade") or "unknown")
         for document in documents
     )
-    provider_configured = bool(os.getenv("DEEPSEEK_API_KEY", "").strip())
+    from core.config import get_session, resolve_provider_key
+    session = get_session(user["user_id"])
+    selected_provider = session.get("provider_name") or "local"
+    provider_configured = (selected_provider == "local" or bool(
+        resolve_provider_key(selected_provider, session.get("api_keys") or {})))
+    provider_configured = provider_configured and not bool(session.get("_provider_error"))
     database_configured = bool(RAG_DATABASE_URL)
     ready = not config_error and provider_configured and database_configured
     return {
@@ -118,7 +122,8 @@ def pdf_rag_health(user: dict = Depends(require_writable)):
         "ready": ready,
         "status": "ready" if ready else "degraded",
         "pipeline_version": RAG_PIPELINE_VERSION,
-        "model": RAG_LLM_MODEL,
+        "model": RAG_LLM_MODEL if selected_provider == "deepseek" else None,
+        "provider_name": selected_provider,
         "provider_configured": provider_configured,
         "database_configured": database_configured,
         "config_valid": config_error is None,
@@ -161,10 +166,12 @@ def upload_pdf(
         )
     except HTTPException:
         raise
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="PDF chat request or provider settings are invalid.")
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="PDF assistant is unavailable. Check its provider and storage settings.")
     except Exception:
         raise HTTPException(
             status_code=503,
@@ -219,10 +226,12 @@ def chat_with_pdfs(request: PDFChatRequest, user: dict = Depends(require_writabl
             conversation_id=request.conversation_id,
             document_ids=request.document_ids,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="PDF chat request or provider settings are invalid.")
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="PDF assistant is unavailable. Check its provider and storage settings.")
     except Exception:
         # Never expose raw SDK/network/database exceptions to the user-facing chat.
         raise HTTPException(

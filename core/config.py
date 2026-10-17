@@ -226,16 +226,14 @@ USERS_DIR = DATA_DIR / "users"
 USERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# Shared session store (Redis) with graceful file fallback.
+# Shared session store (Redis). File persistence is for local deployments.
 #
 # * ARIA_REDIS_URL (e.g. redis://localhost:6379/0): when set, sessions are
 #   written through to Redis (preferred) and read from Redis first, so
-#   multi-worker deployments share state. File store remains as fallback.
+#   multi-worker deployments share state. Configured Redis failures return 503.
 # * ARIA_REQUIRE_SHARED_STORE=1: fail closed elsewhere (see
-#   core.ratelimit._check_shared_store); session helpers themselves never
-#   crash when Redis is unreachable — they log a warning and use the file.
-# * If the `redis` package is missing, fall back to the file store with a
-#   one-time warning (backward compat for local/dev installs).
+#   core.ratelimit._check_shared_store); reads/writes fail closed on outages.
+# * File-only mode remains supported when no shared store is configured or required.
 # ---------------------------------------------------------------------------
 _REDIS_CLIENT = None
 _REDIS_INIT_WARNED = False
@@ -251,13 +249,14 @@ def redis_url() -> str:
 
 
 def require_shared_store() -> bool:
-    """Return True when ARIA_REQUIRE_SHARED_STORE=1 (fail-closed prod mode)."""
-    try:
-        return (os.getenv("ARIA_REQUIRE_SHARED_STORE", "0") or "").strip().lower() in {
-            "1", "true", "yes", "on",
-        }
-    except Exception:
-        return False
+    """Sessions and rate limits use the same deployment policy."""
+    from core.ratelimit import shared_store_required
+    return shared_store_required()
+
+
+def _session_store_unavailable():
+    from fastapi import HTTPException
+    raise HTTPException(status_code=503, detail="Shared session store is unavailable. Try again shortly.")
 
 
 def get_redis_client():
@@ -265,7 +264,7 @@ def get_redis_client():
 
     Graceful fallback: None when ARIA_REDIS_URL is unset, when the `redis`
     package is missing (warn once), or when the server is unreachable (warn
-    once). Callers must always fall back to the file store on None.
+    once). Callers enforce the fail-closed policy on None.
     """
     global _REDIS_CLIENT, _REDIS_INIT_WARNED, _REDIS_MISSING_WARNED
     if _REDIS_CLIENT is not None:
@@ -280,7 +279,7 @@ def get_redis_client():
             _REDIS_MISSING_WARNED = True
             _logger.warning(
                 "ARIA_REDIS_URL is set but the 'redis' package is missing; "
-                "falling back to file session store (pip install redis)."
+                "shared session operations will fail (pip install redis)."
             )
         return None
     try:
@@ -292,7 +291,7 @@ def get_redis_client():
         if not _REDIS_INIT_WARNED:
             _REDIS_INIT_WARNED = True
             _logger.warning(
-                "Redis session store unreachable (%s); falling back to file store.",
+                "Redis session store unreachable (%s); shared session operations will fail.",
                 type(exc).__name__,
             )
         return None
@@ -382,9 +381,9 @@ def _atomic_write_text(target: Path, text: str) -> None:
     import os as _os
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target.with_suffix(target.suffix + ".tmp")
-    # Create tmp with 0600 from the start (POSIX); Windows relies on DPAPI ACLs.
-    fd = _os.open(str(tmp_path), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
+    tmp_path = Path(tmp_name)
     try:
         with _os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -444,6 +443,8 @@ def _atomic_write_text(target: Path, text: str) -> None:
 
 def _coerce_user_id(user_id) -> int:
     """Validate user_id as an int (prevents path traversal via crafted ids)."""
+    if isinstance(user_id, bool) or not isinstance(user_id, (int, str)):
+        raise ValueError("Invalid user id.")
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
@@ -538,8 +539,7 @@ def _ensure_user_paths(session: dict, user_id) -> dict:
             _keep = False
             if cur_s:
                 try:
-                    _parent = Path(cur_s).parent.name
-                    _keep = (_parent == tag)
+                    _keep = Path(cur_s).resolve().parent == user_dir.resolve()
                 except Exception:
                     _keep = False
             if _keep:
@@ -614,44 +614,41 @@ def _disk_dict_to_session(loaded: dict) -> dict:
 
 
 def _redis_save_one(user_id: int, created: float, session: dict) -> None:
-    """Best-effort write-through of one session to Redis (never raises)."""
+    """Write shared state; never acknowledge a failed required write."""
+    import json
     try:
         client = get_redis_client()
         if client is None:
+            if require_shared_store() or redis_url():
+                _session_store_unavailable()
             return
-        import json as _json
-
-        payload = _json.dumps(
-            {"created": float(created), "session": _session_to_disk_dict(session)},
-            default=str,
-        )
-        try:
-            client.setex(_redis_session_key(user_id), int(SESSION_TTL_SECONDS), payload)
-        except Exception as exc:
-            _logger.warning(
-                "Redis session save failed (%s); file store remains authoritative.",
-                type(exc).__name__,
-            )
-    except Exception:
-        pass
+        payload = json.dumps({"created": float(created),
+                              "session": _session_to_disk_dict(session)}, default=str)
+        client.setex(_redis_session_key(user_id), int(SESSION_TTL_SECONDS), payload)
+    except Exception as exc:
+        _logger.warning("Session store write failed (%s)", type(exc).__name__)
+        if require_shared_store() or redis_url():
+            _session_store_unavailable()
 
 
 def _redis_load_one(user_id: int):
-    """Return (created, session) from Redis, or None on miss/error."""
+    """Distinguish a missing session from an unavailable shared backend."""
+    import json
     try:
         client = get_redis_client()
         if client is None:
+            if require_shared_store() or redis_url():
+                _session_store_unavailable()
             return None
         raw = client.get(_redis_session_key(user_id))
-        if not raw:
+        if raw is None:
             return None
-        import json as _json
-
-        data = _json.loads(raw)
-        created = float(data.get("created", 0) or 0)
-        session = _disk_dict_to_session(dict(data.get("session") or {}))
-        return (created, session)
-    except Exception:
+        data = json.loads(raw)
+        return float(data["created"]), _disk_dict_to_session(data["session"])
+    except Exception as exc:
+        _logger.warning("Session store read failed (%s)", type(exc).__name__)
+        if require_shared_store() or redis_url():
+            _session_store_unavailable()
         return None
 
 
@@ -738,35 +735,22 @@ def check_session_store_shared() -> None:
 
 
 def _ensure_provider(session):
-    """Reconstruct the LLMProvider instance if session['provider'] is a string
-    (happens after deserialization from disk where default=str serializes the
-    LLMProvider object to its string representation).
-
-    Fail-closed: if the configured provider cannot be reconstructed (missing
-    API key, consent, or package), fall back to local Ollama so downstream
-    agents never receive provider=None."""
-    from llm_provider import create_provider
+    """Reconstruct only the user's selected provider, without a silent switch."""
     prov = session.get("provider")
-    if prov is None or isinstance(prov, str):
-        name = session.get("provider_name")
-        if name:
-            api_key = resolve_provider_key(name, session.get("api_keys", {}))
-            try:
-                session["provider"] = create_provider(provider=name, api_key=api_key)
-                session.pop("_provider_error", None)
-                return
-            except Exception as exc:
-                _logger.warning("create_provider(%s) failed: %s – falling back to local", name, exc)
-                session["_provider_error"] = str(exc)
-        # Fall back to local Ollama so the provider is never None.
-        try:
-            session["provider"] = create_provider(provider="local")
-            session["provider_name"] = "local"
-            _logger.info("_ensure_provider: fallback to local Ollama")
-        except Exception:
-            _logger.warning("_ensure_provider: local fallback also failed – provider stays None")
-            session["provider"] = None
-            session["_provider_error"] = session.get("_provider_error") or "No provider available"
+    if prov is not None and not isinstance(prov, str):
+        return
+    name = session.get("provider_name")
+    if not name:
+        return
+    try:
+        from llm_provider import create_provider
+        api_key = resolve_provider_key(name, session.get("api_keys", {}))
+        session["provider"] = create_provider(provider=name, api_key=api_key)
+        session.pop("_provider_error", None)
+    except Exception as exc:
+        _logger.warning("Selected provider initialization failed (%s)", type(exc).__name__)
+        session["provider"] = None
+        session["_provider_error"] = "Selected AI provider is unavailable. Check its settings and credentials."
 
 
 def _copy_session(session):
@@ -816,12 +800,13 @@ def get_session(user_id=None):
     global _SESSION_FILE_MTIME
     with SESSION_LOCK:
         # Redis-first when configured: shared store is authoritative across
-        # workers. Fall back to file/memory when Redis is unset/unreachable
-        # (backward compat for local/dev single-process runs).
-        try:
-            _redis_hit = _redis_load_one(user_id)
-        except Exception:
-            _redis_hit = None
+        # workers. File/memory mode applies only when Redis is not configured.
+        _redis_hit = _redis_load_one(user_id)
+        # Redis misses must not resurrect stale worker/file snapshots.
+        if _redis_hit is None and (redis_url() or require_shared_store()):
+            fresh = dict(DEFAULT_SESSION)
+            _ensure_user_paths(fresh, user_id)
+            return fresh
         if _redis_hit is not None:
             try:
                 _created, _sess = _redis_hit
@@ -833,6 +818,11 @@ def get_session(user_id=None):
                     return _copy_session(_sess)
             except Exception:
                 pass
+        if redis_url() or require_shared_store():
+            # Expired or invalid shared records cannot revive file snapshots.
+            fresh = dict(DEFAULT_SESSION)
+            _ensure_user_paths(fresh, user_id)
+            return fresh
         # mtime-gated reconcile: avoid re-reading/parsing session_store.json
         # on every request. Only reload when the file actually changed.
         # save_session updates _SESSION_FILE_MTIME so our own writes never
@@ -878,11 +868,8 @@ def get_session(user_id=None):
         _ensure_provider(entry[1])
         # Warm the shared store on file/memory hits so the next worker
         # finds this session in Redis (best-effort, never raises).
-        try:
-            if redis_url():
-                _redis_save_one(user_id, SESSION_STORE[user_id][0], SESSION_STORE[user_id][1])
-        except Exception:
-            pass
+        if redis_url():
+            _redis_save_one(user_id, SESSION_STORE[user_id][0], SESSION_STORE[user_id][1])
         return _copy_session(entry[1])
 
 
@@ -892,14 +879,15 @@ def save_session(user_id, session):
     In-memory SESSION_STORE keeps decrypted runtime keys; only the
     on-disk JSON copy carries encrypted `api_keys`. When ARIA_REDIS_URL is
     configured the session is also written through to Redis (preferred for
-    multi-worker); Redis failures fall back to the file store. File writes
+    multi-worker); Redis failures raise 503. File writes
     are atomic (.tmp + replace) with 0600 perms and a sidecar lock.
     """
     user_id = _coerce_user_id(user_id)
     _ensure_user_paths(session, user_id)
     now = time.time()
     with SESSION_LOCK:
-        SESSION_STORE[user_id] = (now, session)
+        _redis_save_one(user_id, now, session)
+        SESSION_STORE[user_id] = (now, _copy_session(session))
         # Also write to disk so sessions survive server restarts.
         try:
             import json as _json
@@ -916,11 +904,7 @@ def save_session(user_id, session):
                 pass
         except Exception:
             pass
-        # Write-through to the shared store (best-effort; file remains fallback).
-        try:
-            _redis_save_one(user_id, now, session)
-        except Exception:
-            pass
+
 
 
 def get_session_for_request(request):

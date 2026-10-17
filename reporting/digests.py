@@ -301,10 +301,7 @@ def generate_digest_now(user_id: int, digest_or_id: Any,
         from core.config import get_session
         from services import intelligence_service as intel
 
-        try:
-            session = get_session(user_id)
-        except Exception:
-            session = {}
+        session = get_session(user_id)
         did = dataset_id or digest.get("dataset_id") or intel._dataset_id(session or {})
 
         definition = digest_to_definition(digest)
@@ -315,6 +312,8 @@ def generate_digest_now(user_id: int, digest_or_id: Any,
             definition["forecast_snapshot"] = snapshot
 
         report = intel.generate_report(user_id, did, definition)
+        if not isinstance(report, dict) or report.get("ok") is False or not report.get("id"):
+            raise RuntimeError("Report generation did not produce a saved report.")
         # Tag the report back to its digest for the UI (best-effort; the
         # definition already carries digest_id for re-run).
         try:

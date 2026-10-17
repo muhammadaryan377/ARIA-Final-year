@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -89,7 +90,25 @@ def _load_secret() -> str:
     return secret
 
 
-SECRET = _load_secret()
+_SECRET_LOCK = threading.Lock()
+
+
+def _signing_secret() -> str:
+    """Resolve once on first use; keep the legacy auth.SECRET override contract."""
+    with _SECRET_LOCK:
+        value = globals().get("SECRET")
+        if value is None:
+            value = _load_secret()
+            globals()["SECRET"] = value
+        return value
+
+
+def __getattr__(name):
+    if name == "SECRET":
+        return _signing_secret()
+    raise AttributeError(name)
+
+
 # Previous secret accepted for verification only (rotation: set JWT_SECRET to
 # the new value and JWT_SECRET_PREVIOUS to the old one until tokens expire).
 SECRET_PREVIOUS = (os.getenv("JWT_SECRET_PREVIOUS") or "").strip() or None
@@ -140,10 +159,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 def _decode_token(token: str):
     """Decode with the current secret, falling back to the previous secret."""
     try:
-        return jwt.decode(token, SECRET, algorithms=[JWT_ALGO])
+        return jwt.decode(token, _signing_secret(), algorithms=[JWT_ALGO], options={"require": ["exp", "iat", "sub"]})
     except jwt.InvalidSignatureError:
         if SECRET_PREVIOUS:
-            return jwt.decode(token, SECRET_PREVIOUS, algorithms=[JWT_ALGO])
+            return jwt.decode(token, SECRET_PREVIOUS, algorithms=[JWT_ALGO], options={"require": ["exp", "iat", "sub"]})
         raise
 
 
@@ -227,12 +246,13 @@ def authenticate(username: str, password: str) -> int | None:
 def issue_token(user_id: int, username: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
+        "jti": secrets.token_hex(16),
         "sub": str(user_id),
         "username": username,
         "iat": now,
         "exp": now + timedelta(days=TOKEN_TTL_DAYS),
     }
-    return jwt.encode(payload, SECRET, algorithm=JWT_ALGO)
+    return jwt.encode(payload, _signing_secret(), algorithm=JWT_ALGO)
 
 
 def verify_token(token: str) -> dict | None:

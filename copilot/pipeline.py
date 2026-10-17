@@ -1326,7 +1326,7 @@ class CopilotPipeline:
                 {"data": rows, "user_goal": question})
         except Exception as exc:
             log.info("Copilot forecast run failed (%s); trend fallback.", exc)
-            return f"Forecast run failed: {exc}"
+            return "The forecast could not run. Check the selected measure and available history, then retry."
         if not isinstance(payload, dict) or not payload.get("valid"):
             return "Forecast returned invalid or empty result."
         points = payload.get("points") or []
@@ -1336,7 +1336,7 @@ class CopilotPipeline:
             return self._forecast_narrative(question, payload, analysis)
         except Exception as exc:
             log.info("Copilot forecast narration failed (%s); trend fallback.", exc)
-            return f"Forecast narration failed: {exc}"
+            return "The forecast explanation is unavailable. Please retry."
 
     def _forecast_narrative(self, question: str, payload: dict,
                             analysis: dict) -> str:

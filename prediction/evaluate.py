@@ -24,6 +24,10 @@ def mape(actual, predicted):
     """Mean Absolute Percentage Error (%). None if no valid (non-zero) actuals."""
     actual = np.asarray(actual, dtype=float)
     predicted = np.asarray(predicted, dtype=float)
+    n = min(len(actual), len(predicted))
+    actual, predicted = actual[:n], predicted[:n]
+    if not np.all(np.isfinite(actual)) or not np.all(np.isfinite(predicted)):
+        return None
     mask = np.abs(actual) > 1e-9
     if mask.sum() == 0:
         return None
@@ -411,7 +415,7 @@ def select_model(values, min_points=5, season_period=None):
 
 def accuracy_from_mape(mape_value):
     """Accuracy percentage from a MAPE value (None-safe)."""
-    if mape_value is None:
+    if mape_value is None or not np.isfinite(mape_value) or mape_value < 0:
         return None
     return round(max(0.0, 100.0 - mape_value), 1)
 

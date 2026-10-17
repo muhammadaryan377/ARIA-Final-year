@@ -87,7 +87,7 @@ natural-English questions. Never mention raw table or column identifiers
         """Natural noun for a measure column when used in analyst questions:
         'orders.total' -> 'order value', 'order_details.unit_price' -> 'unit price'."""
         col_label = self._natural_label(col)
-        if col_label in self._GENERIC_TOTAL_WORDS:
+        if col_label and set(col_label.lower().split()) <= self._GENERIC_TOTAL_WORDS:
             # Single-table/file datasets name the table after the upload
             # (never a business concept): use a neutral noun instead of
             # leaking the filename into the question. Multi-table schemas
@@ -127,7 +127,11 @@ natural-English questions. Never mention raw table or column identifiers
                 if other == table_name:
                     continue
                 for fk in other_info.get("foreign_keys", []):
-                    if fk["referenced_table"] == table_name:
+                    reference = str(fk.get("referenced_table") or "")
+                    normalized = lambda value: str(value).replace('"', '').replace('`', '').lower()
+                    exact = normalized(reference) == normalized(table_name)
+                    candidates = [t for t in tables if normalized(t).split('.')[-1] == normalized(reference)]
+                    if exact or (len(candidates) == 1 and candidates[0] == table_name):
                         fact_refs.append(other)
                         break
 
@@ -190,6 +194,34 @@ natural-English questions. Never mention raw table or column identifiers
                         ts.append(f"What is the overall {noun}?")
             if ts:
                 per_table.append(ts)
+
+        # Backfill from real measures/dimensions; never invent a metric to
+        # satisfy a requested count on a dimension-only schema.
+        cardinality_budget = 8
+        for table_name in tables:
+            measure = self._pick_measure_column(table_name)
+            if not measure:
+                continue
+            noun = self._measure_noun(table_name, measure)
+            ts = [f"What is the average {noun}?", f"What is the highest {noun}?",
+                  f"What is the lowest {noun}?", f"How is {noun} distributed?",
+                  f"Are there unusual values in {noun}?"]
+            info = self.tables[table_name]
+            for col in info.get("columns", {}):
+                if col in (info.get("primary_key") or []) or col.lower() == "id" or col.lower().endswith("_id"):
+                    continue
+                if self._classify_column(table_name, col) != "text":
+                    continue
+                if cardinality_budget <= 0:
+                    break
+                cardinality_budget -= 1
+                cardinality = self._estimate_column_cardinality(table_name, col)
+                if cardinality is not None and not 2 <= cardinality <= 50:
+                    continue
+                label = self._natural_label(col)
+                ts.extend([f"How does {noun} compare by {label}?",
+                           f"What share of {noun} comes from each {label}?"])
+            per_table.append(ts)
 
         # Round-robin across tables so the first N suggestions are varied,
         # not the first N tables repeated with the same template.

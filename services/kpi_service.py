@@ -81,11 +81,14 @@ def _coerce_num(value):
         from core.text_numeric import try_parse_text_number as _tpn
         parsed = _tpn(value)
         if parsed is not None:
-            return parsed
+            import math
+            return parsed if math.isfinite(parsed) else None
     except Exception:
         pass
     try:
-        return float(str(value).replace(",", "").strip())
+        import math
+        parsed = float(str(value).replace(",", "").strip())
+        return parsed if math.isfinite(parsed) else None
     except (TypeError, ValueError):
         return None
 

@@ -340,26 +340,11 @@ class GroundingMixin:
         info = self.tables[table_name]
         pk = set(info.get("primary_key", []) or [])
         fk_cols = {fk.get("column") for fk in info.get("foreign_keys", [])}
-        fallback = None
         for col in info["columns"]:
             low = col.lower()
-            if col in pk or col in fk_cols or low == "id" \
-                    or low.endswith("_id") or low.endswith("id"):
+            if col in pk or col in fk_cols or low == "id" or low.endswith("_id") or low.endswith("id"):
                 continue
-            if self._classify_column(table_name, col) == "numeric":
-                if self._is_dimension_like(table_name, col):
-                    if fallback is None:
-                        fallback = col
-                    continue
-                return col
-        if fallback is not None:
-            return fallback
-        for col in info["columns"]:
-            low = col.lower()
-            if col in pk or col in fk_cols or low == "id" \
-                    or low.endswith("_id") or low.endswith("id"):
-                continue
-            if self._classify_column(table_name, col) == "numeric":
+            if self._classify_column(table_name, col) == "numeric" and not self._is_dimension_like(table_name, col):
                 return col
         return None
 
@@ -1001,7 +986,8 @@ class GroundingMixin:
                 from core.db import base_table as _bt2
             except Exception:
                 _bt2 = lambda n: str(n or "").split(".")[-1]  # noqa: E731
-            sql = (f"SELECT DISTINCT {quote(col)} FROM {quote(_bt2(table))} "
+            qualified = ".".join(quote(part) for part in str(table).split("."))
+            sql = (f"SELECT DISTINCT {quote(col)} FROM {qualified} "
                    f"LIMIT {int(cap)}")
             with self.engine.connect() as conn:
                 rows = conn.execute(_text(sql)).fetchall()

@@ -12,7 +12,7 @@ import logging
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from core.config import get_session, save_session
@@ -671,16 +671,59 @@ def _sanitize_saved_text(value, max_len=500):
     return s
 
 
+# Only engine card/display fields may be saved. IDs and timestamps are
+# server-owned; nested internal instructions/SQL/debug keys are discarded.
+_RX_SAVED_FIELDS = frozenset({
+    "title", "summary", "action", "confidence", "confidence_label", "risk",
+    "display", "why_summary", "details", "impact_note", "limitations",
+    "assumptions", "evidence_pass", "driver", "metric", "table", "rank",
+    "score", "impact", "evidence", "scenario_options", "success_metric",
+    "review_cadence", "review_trigger", "action_type", "control_level",
+    "problem_text", "why_text", "action_text", "outcome_text", "owner",
+    "priority", "due", "review_outcome", "review_note", "review_at",
+})
+
+
+def _sanitize_saved_prescription(payload):
+    import math
+    def clean(value, depth=0):
+        if depth > 8:
+            raise HTTPException(status_code=422, detail="Prescription is too deeply nested.")
+        if isinstance(value, str):
+            return _sanitize_saved_text(value, 4000)
+        if value is None or isinstance(value, (bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, list):
+            return [clean(v, depth + 1) for v in value[:100]]
+        if isinstance(value, dict):
+            return {str(k): clean(v, depth + 1) for k, v in list(value.items())[:100]
+                    if str(k).lower() not in _RX_INTERNAL_KEYS | _TOP_INTERNAL_KEYS
+                    and not any(x in str(k).lower() for x in ("sql", "password", "token", "api_key", "instruction", "prompt"))}
+        raise HTTPException(status_code=422, detail="Unsupported prescription value.")
+    import json
+    try:
+        size = len(json.dumps(payload, default=str).encode("utf-8"))
+    except (ValueError, RecursionError):
+        raise HTTPException(status_code=422, detail="Invalid prescription payload.")
+    if size > 65536:
+        raise HTTPException(status_code=413, detail="Prescription exceeds the 64 KB limit.")
+    return clean({k: v for k, v in payload.items() if k in _RX_SAVED_FIELDS})
+
+
 @router.post("/api/prescriptions/save")
 def prescription_save(req: SaveRequest, request: Request,
                       user: dict = Depends(require_writable)):
     """Persist the structured prescription — never prose alone (§28)."""
     session = get_session(user["user_id"])
     saved = session.get("saved_prescriptions", [])
-    entry = {"id": f"rxsv_{int(time.time() * 1000)}",
-             "created_at": datetime.now().isoformat(),
-             "question": _sanitize_saved_text(req.question, 500) or None,
-             **(req.prescription or {})}
+    from uuid import uuid4
+    from datetime import timezone
+    entry = {**_sanitize_saved_prescription(req.prescription or {}),
+             "id": f"rxsv_{uuid4().hex}",
+             "created_at": datetime.now(timezone.utc).isoformat(),
+             "question": _sanitize_saved_text(req.question, 500) or None}
     saved = [entry] + saved[:49]
     session["saved_prescriptions"] = saved
     save_session(user["user_id"], session)

@@ -679,8 +679,8 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
             "sql_used": None,
             "row_count": 0,
             "data": [],
-            "message": f"Could not fully analyze: {_safe_exc}. The database connection and dynamic schema are working, but the analytical engine encountered an issue with this specific question. Try rephrasing or ask a simpler analytical question (e.g., counts, totals, top items, trends over time).",
-            "preprocessing": {"notes": ["Dynamic schema detected; analysis partially completed."]},
+            "message": f"Analysis could not complete: {_safe_exc}. No result was produced. Check the source and provider settings, then retry.",
+            "preprocessing": {"notes": ["Analysis failed before a usable result was produced."]},
             "missing_values_handled": "preserved (NULLs kept as-is)",
             "timestamp": datetime.now().isoformat(),
             "status": "query_failed",
@@ -1325,7 +1325,7 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
             "interpreted_intent": {"primary": "descriptive_summary",
                                    "capabilities": ["descriptive_summary"],
                                    "confidence": "low"},
-            "metric": None, "dimensions": [], "filters": req.filters or [],
+            "metric": None, "metric_column": None, "dimensions": [], "filters": req.filters or [],
             "time_range": req.time_range or {},
             "comparison_period": {"granularity": "month",
                                   "description": "Comparison unavailable."},
@@ -1334,9 +1334,9 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
             "confidence": "low", "limitations": [_san2(_env_exc)],
             "possible_drivers": [], "hypothesis": None, "recommendations": [],
             "follow_up_questions": list(all_suggestions or [])[:8],
-            "result_status": "partial",
-            "result_message": ("Partial result: extended analytics metadata "
-                               "was unavailable. Core findings above are intact."),
+            "result_status": "partial" if result_data else "backend-failure",
+            "result_message": ("Extended analytics metadata was unavailable. Review the partial results."
+                               if result_data else "Analysis did not produce a usable result. Please retry."),
         }
     # ── Business 360 (non-technical 360° view: what + why + what-to-do) ──
     # Best-effort, never fatal. Powers the AI Analytics inline card.

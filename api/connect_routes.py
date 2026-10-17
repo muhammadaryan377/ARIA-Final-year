@@ -391,17 +391,19 @@ def _drop_progress(user_id: int, timestamp) -> None:
 def _get_progress_snapshot(user_id: int, terminal: bool = False) -> dict | None:
     """Copy of the user's progress entry (None when absent).
 
-    ``terminal=True`` means the caller is a consumer that just observed the
-    finished/failed state: the entry is removed so its ``result`` payload is
-    not held forever after it has been delivered.
+    The legacy ``terminal`` argument is retained for compatibility. Terminal
+    results expire by TTL rather than being consumed by the first reader.
     """
     with _upload_progress_lock:
         prog = _upload_progress.get(user_id)
         if not prog:
             return None
         snap = dict(prog)
-        if terminal and (snap.get("done") or snap.get("error")):
+        # Retain terminal results until TTL: a dropped SSE packet or a second
+        # polling tab must still be able to retrieve the completed result.
+        if time.time() - float(snap.get("timestamp") or 0) > _PROGRESS_TTL_S:
             _upload_progress.pop(user_id, None)
+            return None
         return snap
 
 
@@ -409,8 +411,7 @@ def _get_progress_snapshot(user_id: int, terminal: bool = False) -> dict | None:
 async def get_upload_progress(user: dict = Depends(get_current_user)):
     """Return current ingestion progress for the user.
 
-    The terminal (done/error) payload is returned once, then the entry is
-    dropped — subsequent polls honestly report ``active: false``.
+    Terminal results remain available for ten minutes for reconnecting clients.
     """
     prog = _get_progress_snapshot(user["user_id"], terminal=True)
     if not prog:
@@ -439,8 +440,9 @@ async def stream_upload_progress(user: dict = Depends(require_writable)):
                         break
                 await asyncio.sleep(1)
         finally:
-            if consumed:
-                _drop_progress(uid, last_ts)
+            # Delivery of a yield is not an acknowledgement from the browser.
+            # Polling/reconnected streams can recover the result until TTL.
+            pass
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -1386,6 +1388,8 @@ def session_status(user: dict = Depends(get_current_user)):
         "connection_status": "connected" if is_connected else "not-connected",
         "display_state": display_state,
         "schema_status": schema_status,
+        "provider_name": session.get("provider_name"),
+        "provider_error": session.get("_provider_error"),
         "db_name": session.get("db_name", ""),
         "source_type": session.get("source_type", ""),
         "db_uri": safe_uri,
