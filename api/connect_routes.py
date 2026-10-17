@@ -30,7 +30,7 @@ from document_processor import create_document_processor
 router = APIRouter()
 
 # Hosted providers run inference off-machine (need an API key, can serve vision).
-HOSTED_PROVIDERS = {"cloud", "deepseek", "omniroute", "grok"}
+HOSTED_PROVIDERS = {"cloud", "deepseek", "omniroute", "grok", "openai", "anthropic"}
 
 # Upload bounds (§40): enforced while streaming so oversized bodies never
 # fill the disk. CSV cap matches the handler's 100 MB post-write check.
@@ -482,6 +482,35 @@ class ProviderSwitchRequest(BaseModel):
     provider: str = "local"
     api_key: str | None = None      # optional key override for hosted providers
     base_url: str | None = None     # optional endpoint override for hosted providers
+    model: str | None = None
+
+
+@router.get("/api/provider/options")
+def provider_options(user: dict = Depends(get_current_user)):
+    from llm_provider import PROVIDERS
+    from core.config import resolve_provider_key
+    session = get_session(user["user_id"])
+    labels = {"cloud": "Groq", "deepseek": "DeepSeek", "openai": "OpenAI / GPT",
+              "anthropic": "Anthropic / Claude", "grok": "xAI / Grok", "local": "Local / Ollama"}
+    return {"providers": [{"id": name, "label": label,
+        "model": session.get("provider_models", {}).get(name, PROVIDERS[name]["models"]).get("semi", ""),
+        "has_key": bool(resolve_provider_key(name, session.get("api_keys")))}
+        for name, label in labels.items()]}
+
+
+@router.post("/api/provider/models")
+def provider_models(request: ProviderSwitchRequest, user: dict = Depends(require_writable)):
+    from core.config import resolve_provider_key
+    if request.provider not in HOSTED_PROVIDERS or request.provider == "omniroute":
+        raise HTTPException(status_code=400, detail="Choose a supported hosted provider.")
+    session = get_session(user["user_id"])
+    try:
+        llm = create_provider(provider=request.provider,
+            api_key=request.api_key or resolve_provider_key(request.provider, session.get("api_keys")))
+        result = llm._cloud_client.with_options(timeout=15).models.list()
+        return {"models": sorted({m.id for m in result.data})[:200]}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not load models. Check your provider key and backend cloud consent, or enter a model ID manually.")
 
 
 @router.post("/api/provider/switch")
@@ -494,8 +523,14 @@ def switch_provider(request: ProviderSwitchRequest, user: dict = Depends(require
     # Local provider (ollama) may use loopback http; hosted must not probe internal http.
     if request.base_url and request.provider != "local":
         _validate_hosted_base_url(request.base_url)
+    if request.model is not None and (not request.model.strip() or len(request.model) > 200
+                                      or any(ord(c) < 32 for c in request.model)):
+        raise HTTPException(status_code=400, detail="Enter a valid model ID (up to 200 characters).")
+    models = session.get("provider_models", {}).get(request.provider)
+    if request.model:
+        models = {role: request.model.strip() for role in ("sql", "story", "suggest", "semi", "schema", "vision")}
     current = session.get("provider_name")
-    if (current == request.provider and not request.api_key and not request.base_url
+    if (current == request.provider and not request.api_key and not request.base_url and not request.model
             and session.get("provider") is not None and not session.get("_provider_error")):
         return {"ok": True, "provider": current, "changed": False}
 
@@ -512,23 +547,29 @@ def switch_provider(request: ProviderSwitchRequest, user: dict = Depends(require
             provider=request.provider,
             api_key=request.api_key or _saved,
             base_url=request.base_url,
+            models=models,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not initialise '{request.provider}' LLM provider: {exc}")
 
-    # Validate hosted keys with a no-cost ping so a bad key fails here,
-    # not pages later inside an analysis.
-    if request.provider != "local" and (request.api_key or request.provider in ("cloud", "deepseek", "omniroute", "grok")):
+    # A real, small generation checks both credentials and model access.
+    if request.provider in HOSTED_PROVIDERS:
+        if not llm.model_for("suggest"):
+            raise HTTPException(status_code=400, detail="Choose a model ID for this provider.")
         try:
-            llm.ping(timeout=25)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"The {request.provider} key was rejected or unreachable ({exc}). Check the key and try again.",
-            )
-
+            reply = llm.chat("suggest", [{"role": "user", "content": "Reply with OK."}],
+                             num_predict=2048, timeout=45, user_id=user["user_id"])
+            if not reply:
+                raise ValueError("Model returned no text")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Provider/model check failed. Check API key, model access, billing and backend logs.")
+    session.setdefault("provider_models", {})[request.provider] = dict(llm.models)
+    session.pop("csv_llm_dashboard", None)
     session["provider"] = llm
     session["provider_name"] = request.provider
+    configured = session.setdefault("configured_providers", [])
+    if request.provider not in configured:
+        configured.append(request.provider)
     session.pop("_provider_error", None)
     # Provider isolation: API keys are stored per hosted provider only.
     # Local (Ollama) uses no key, so a key sent with provider=local is ignored
@@ -639,7 +680,7 @@ def _do_connect(request: ConnectRequest, user: dict, db_type: str) -> dict:
     # Use user's saved API key for hosted providers if available
     user_key = session.get("api_keys", {}).get(request.provider) if request.provider in HOSTED_PROVIDERS else None
     try:
-        llm = create_provider(provider=request.provider, api_key=user_key or None)
+        llm = create_provider(provider=request.provider, api_key=user_key or None, models=session.get("provider_models", {}).get(request.provider))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not initialise '{request.provider}' LLM provider: {exc}")
 
@@ -1071,7 +1112,7 @@ def connect_file(provider: str | None = Form(None), file: UploadFile = File(...)
     # Local providers must never inherit a saved cloud key.
     saved_key = (session.get("api_keys") or {}).get(provider) if provider in HOSTED_PROVIDERS else None
     try:
-        llm = create_provider(provider=provider, api_key=llm_api_key or saved_key, base_url=llm_base_url)
+        llm = create_provider(provider=provider, api_key=llm_api_key or saved_key, base_url=llm_base_url, models=session.get("provider_models", {}).get(provider))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not initialise '{provider}' LLM provider: {exc}")
 
@@ -1176,6 +1217,7 @@ def connect_pdf(
             provider=provider,
             api_key=llm_api_key or saved_key,
             base_url=llm_base_url,
+            models=session.get("provider_models", {}).get(provider),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not initialise '{provider}' LLM provider: {exc}")

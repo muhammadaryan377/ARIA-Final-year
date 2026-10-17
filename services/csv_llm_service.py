@@ -83,7 +83,7 @@ def _provider(session):
     name = session.get("provider_name")
     if not name:
         raise CsvAnalysisError("Select an AI provider before analyzing the CSV.")
-    return create_provider(provider=name, api_key=resolve_provider_key(name, session.get("api_keys")))
+    return create_provider(provider=name, api_key=resolve_provider_key(name, session.get("api_keys")), models=session.get("provider_models", {}).get(name))
 
 
 class _Run:
@@ -266,7 +266,7 @@ def dashboard(session, user_id):
     context = _context(session)
     path = Path(session["db_uri"][len("sqlite:///"):]).resolve()
     key = hashlib.sha256(json.dumps([VERSION, str(path), path.stat().st_mtime_ns,
-                                    context, session.get("provider_name")], sort_keys=True).encode()).hexdigest()
+                                    context, session.get("provider_name"), session.get("provider_models")], sort_keys=True).encode()).hexdigest()
     cached = session.get("csv_llm_dashboard")
     if cached and cached.get("key") == key:
         result = copy.deepcopy(cached["config"])

@@ -38,6 +38,8 @@ for _name, _value in list(os.environ.items()):
 # There is intentionally no cross-provider fallback (e.g. DeepSeek must never
 # silently pick up GROQ_API_KEY).
 PROVIDER_ENV_KEYS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
     "cloud": "GROQ_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "omniroute": "OMNIROUTE_API_KEY",
@@ -555,7 +557,7 @@ def _ensure_user_paths(session: dict, user_id) -> dict:
     return session
 
 SOURCE_TYPES = {"relational", "semi-structured", "document"}
-PROVIDER_NAMES = {"local", "cloud", "deepseek", "omniroute", "grok"}
+PROVIDER_NAMES = {"local", "cloud", "deepseek", "omniroute", "grok", "openai", "anthropic"}
 DB_TYPES = {"postgresql", "mysql"}
 
 DEFAULT_SESSION = {
@@ -745,7 +747,7 @@ def _ensure_provider(session):
     try:
         from llm_provider import create_provider
         api_key = resolve_provider_key(name, session.get("api_keys", {}))
-        session["provider"] = create_provider(provider=name, api_key=api_key)
+        session["provider"] = create_provider(provider=name, api_key=api_key, models=session.get("provider_models", {}).get(name))
         session.pop("_provider_error", None)
     except Exception as exc:
         _logger.warning("Selected provider initialization failed (%s)", type(exc).__name__)

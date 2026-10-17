@@ -382,6 +382,12 @@ PROVIDERS = {
     },
 }
 
+# New providers deliberately require an account-supported model ID.
+for _name, _label, _env in (("openai", "OpenAI / GPT", "OPENAI_MODEL"),
+                             ("anthropic", "Anthropic / Claude", "ANTHROPIC_MODEL")):
+    PROVIDERS[_name] = {"label": _label, "models": {
+        role: os.getenv(_env, "") for role in ("sql", "story", "suggest", "semi", "schema", "vision")}}
+
 GROQ_MODEL = PROVIDERS["cloud"]["models"]["sql"]
 
 # Local Ollama models default to a small runtime context (often 4096 tokens),
@@ -418,6 +424,9 @@ class LLMProvider:
             self._cloud_client = Groq(api_key=api_key or os.getenv("GROQ_API_KEY"), max_retries=0, base_url=base_url) if base_url else Groq(api_key=api_key or os.getenv("GROQ_API_KEY"), max_retries=0)
             if not self._cloud_client.api_key:
                 raise RuntimeError("Missing GROQ_API_KEY. Set it in .env or pass api_key.")
+        elif provider in ("openai", "anthropic"):
+            from services.hosted_clients import make_client
+            self._cloud_client = make_client(provider, api_key, base_url)
         elif provider == "deepseek":
             from openai import OpenAI
             self._cloud_client = OpenAI(
@@ -924,4 +933,8 @@ def create_provider(provider=_UNSET, api_key=None, models=None, base_url=None,
         if not llm._cloud_client.api_key:
             raise RuntimeError("Missing GROK_API_KEY (or XAI_API_KEY). Set it in .env or pass api_key.")
         return llm
+    if provider in ("openai", "anthropic"):
+        return LLMProvider(provider, api_key=api_key, models=models, base_url=base_url)
+    if provider != "local":
+        raise ValueError(f"Unknown provider '{provider}'")
     return LLMProvider("local", models=models)

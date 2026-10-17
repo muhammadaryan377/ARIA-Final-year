@@ -227,17 +227,14 @@ export default function App() {
     setAppStage("llm-selection");
   };
 
-  const handleLLMSelect = async (mode: string, apiKey?: string) => {
-    setSelectedLLM(mode);
-    storage.set(KEYS.llmMode, mode);
+  const handleLLMSelect = async (mode: string, apiKey?: string, model?: string) => {
     // Materialize the choice server-side so the session provider matches
     // the UI immediately (prevents "choose an LLM provider" right after).
-    // Provider isolation: the Groq key is sent ONLY when Cloud is selected;
-    // Local AI switches keyless and never touches stored keys.
+    // Send credentials only to the explicitly selected hosted provider.
     try {
       await apiFetch("/provider/switch", {
         method: "POST",
-        body: JSON.stringify(mode === "cloud" && apiKey ? { provider: mode, api_key: apiKey } : { provider: mode }),
+        body: JSON.stringify({ provider: mode, ...(mode !== "local" ? { api_key: apiKey, model } : {}) }),
       });
     } catch (err: any) {
       if (err?.status === 401) {
@@ -249,6 +246,8 @@ export default function App() {
       // Surface the failure so the user knows the switch did not happen.
       throw new Error(err?.message || `Could not switch to ${mode}.`);
     }
+    setSelectedLLM(mode);
+    storage.set(KEYS.llmMode, mode);
     // Restore connection state from the stored session so the Dashboard
     // shows KPIs/charts without requiring a fresh connect.
     (async () => {
