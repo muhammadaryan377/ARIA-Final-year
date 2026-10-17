@@ -909,6 +909,9 @@ export default function AIAnalytics({
   const [followUpQuery, setFollowUpQuery] = useState("");
   const [history, setHistory] = useState<{ q: string; r: any }[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const [chatLoading, setChatLoading] = useState(true);
+  const [chatNotice, setChatNotice] = useState("");
+  const restoreGeneration = useRef(0);
   const conversationRef = useRef<string>(crypto.randomUUID());
 
   /* ---- Autocomplete ---- */
@@ -952,6 +955,29 @@ export default function AIAnalytics({
     }
     prevDatasetRef.current = datasetKey;
   }, [connectionStatus, datasetKey, loadSuggestions]);
+
+  useEffect(() => {
+    const generation = ++restoreGeneration.current;
+    const controller = new AbortController();
+    setChatLoading(true);
+    apiFetch("/csv/conversation", { signal: controller.signal }).then((data: any) => {
+      if (controller.signal.aborted || generation !== restoreGeneration.current) return;
+      const chat = data?.conversation;
+      if (chat) {
+        conversationRef.current = chat.conversation_id;
+        const turns = Array.isArray(chat.turns) ? chat.turns.map((turn: any) => ({ q: turn.q, r: { success: true, data: turn.r } })) : [];
+        setHistory(turns);
+        const latest = turns[turns.length - 1];
+        setResult(latest?.r || null); setAskedQuestion(latest?.q || "");
+        setChatNotice(turns.length ? "Restored your saved chat for this dataset." : "");
+      }
+    }).catch((err: any) => {
+      if (err?.name !== "AbortError" && generation === restoreGeneration.current) setChatNotice("Could not restore saved chat. You can start a new analysis.");
+    }).finally(() => {
+      if (generation === restoreGeneration.current) setChatLoading(false);
+    });
+    return () => controller.abort();
+  }, [datasetKey, connectionStatus]);
 
   /* ---- Navigation ---- */
   const gotoTab = useCallback((tab: string) => {
@@ -1034,7 +1060,7 @@ export default function AIAnalytics({
   /* ---- Run analysis on-page ---- */
   const runOnPage = useCallback(async (question: string) => {
     const q = question.trim();
-    if (!q || running) return;
+    if (!q || running || chatLoading) return;
     setAskedQuestion(q);
     setSearchQuery(""); setFollowUpQuery(""); setAcOptions([]); setAcOpen(false);
     setRunning(true); setError(""); setResult(null);
@@ -1050,7 +1076,7 @@ export default function AIAnalytics({
       if (e?.name === "AbortError") return;
       setError(e?.message || "Could not analyze this question.");
     } finally { if (abortRef.current === ctrl) setRunning(false); }
-  }, [running, datasetKey]);
+  }, [running, datasetKey, chatLoading]);
 
   /* ---- Follow-up submit ---- */
   const submitFollowUp = () => {
@@ -1085,11 +1111,21 @@ export default function AIAnalytics({
   };
 
   /* ---- Back to home ---- */
-  const goHome = () => {
+  const goHome = async () => {
+    const generation = ++restoreGeneration.current;
+    setChatLoading(true); setChatNotice("");
     abortRef.current?.abort(); abortRef.current = null;
     conversationRef.current = crypto.randomUUID();
     setRunning(false); setResult(null); setError(""); setHistory([]); setAskedQuestion("");
     setSearchQuery(""); setFollowUpQuery(""); setSidebarCtx({});
+    try {
+      const data: any = await apiFetch("/csv/conversation/new", { method: "POST" });
+      if (generation === restoreGeneration.current) conversationRef.current = data.conversation_id;
+    } catch {
+      if (generation === restoreGeneration.current) setChatNotice("New chat is ready, but its empty state could not be saved yet.");
+    } finally {
+      if (generation === restoreGeneration.current) setChatLoading(false);
+    }
   };
 
   /* ---- Result normalization (analyzeQuestion returns {success, data: goalData}) ---- */
@@ -1262,6 +1298,7 @@ export default function AIAnalytics({
       <div className="flex gap-6 p-4 md:p-6 max-w-[1440px] mx-auto">
         {/* ---- Main column ---- */}
         <div className="flex-1 min-w-0 space-y-5">
+          {(chatLoading || chatNotice) && <p role="status" className="text-xs text-muted-foreground">{chatLoading ? "Loading current chat…" : chatNotice}</p>}
           {/* Header */}
           <div>
             <p className="text-[11px] font-bold tracking-[0.14em] text-blue-700 dark:text-blue-400">ARIA <span className="text-muted-foreground font-normal tracking-normal">/ Analytics</span></p>
@@ -1304,7 +1341,7 @@ export default function AIAnalytics({
                   className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
                   aria-label="Ask a question"
                 />
-                <button onClick={() => { setAcOpen(false); runOnPage(searchQuery); }} className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-blue-700 text-white hover:bg-blue-800 transition-colors flex-shrink-0" aria-label="Submit">
+                <button onClick={() => { setAcOpen(false); runOnPage(searchQuery); }} className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-blue-700 text-white hover:bg-blue-800 transition-colors flex-shrink-0" disabled={chatLoading || running} aria-label="Submit">
                   <Send size={14} />
                 </button>
               </div>
@@ -1345,7 +1382,7 @@ export default function AIAnalytics({
                     className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
                     aria-label="Ask a question"
                   />
-                  <button onClick={() => { setAcOpen(false); runOnPage(searchQuery); }} className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-blue-700 text-white hover:bg-blue-800 transition-colors flex-shrink-0" aria-label="Submit">
+                  <button onClick={() => { setAcOpen(false); runOnPage(searchQuery); }} className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-blue-700 text-white hover:bg-blue-800 transition-colors flex-shrink-0" disabled={chatLoading || running} aria-label="Submit">
                     <ChevronRight size={15} />
                   </button>
                 </div>
@@ -1410,7 +1447,7 @@ export default function AIAnalytics({
                       <p className="mt-1 text-muted-foreground">ARIA: {turn.r?.data?.answer || turn.r?.data?.message || turn.r?.answer || turn.r?.message}</p>
                       <button type="button" className="mt-1 text-xs underline" onClick={() => { setResult(turn.r); setAskedQuestion(turn.q); }}>View this result</button>
                     </div>)}
-                    <p className="mt-3 text-xs text-muted-foreground">Follow-ups use the latest conversation context. New analysis starts a separate chat.</p>
+                    <p className="mt-3 text-xs text-muted-foreground">Follow-ups use this chat’s context. Saved CSV chats restore after refresh while the same dataset is connected. New analysis starts a separate chat.</p>
                   </details>}
                   {/* Asked question — stays until the user dismisses it */}
                   {askedQuestion && (
@@ -1509,6 +1546,13 @@ export default function AIAnalytics({
                     {(gd.limitations || []).map((text: string, i: number) => <p key={i} className="text-muted-foreground">{text}</p>)}
                     {gd.dataset_profile?.profile && <p className="text-xs text-muted-foreground">Data quality profile: {gd.dataset_profile.profile.scope}. Analysis queries use the connected dataset.</p>}
                   </Card>}
+                  {gd?.validation && <details className="text-xs rounded-xl border p-4">
+                    <summary className="cursor-pointer">Result checks and AI review</summary>
+                    {(gd.validation.checks || []).map((check: any, i: number) => <p key={i} className="mt-2">{check.detail}</p>)}
+                    <p className="mt-2">AI review: {gd.validation.semantic_review?.status}. {gd.validation.semantic_review?.reason}</p>
+                    <p className="mt-2 text-muted-foreground">This review is not independent verification of metric meaning.</p>
+                  </details>}
+                  {gd?.ranked_insights?.length > 0 && <details className="text-xs rounded-xl border p-4"><summary className="cursor-pointer">Patterns to investigate</summary>{gd.ranked_insights.map((item: any, i: number) => <p key={i} className="mt-2">{item.title} — {item.effect_measure.replace(/_/g, " ")}: {item.largest_absolute_effect ?? "Unavailable"}. {item.note}</p>)}</details>}
                   {gd?.llm_trace && <details className="text-xs text-muted-foreground rounded-xl border p-4">
                     <summary className="cursor-pointer">AI execution details</summary>
                     <p className="mt-2">Provider: {gd.llm_trace.provider} · {gd.llm_trace.cached ? "Cached result" : "Fresh analysis"} · Provider invocations: {gd.llm_trace.cached ? 0 : gd.llm_trace.provider_invocation_count}</p>

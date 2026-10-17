@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 import auth
 from core.config import get_session, save_session, resolve_provider_key
-from core.deps import require_data, require_writable
+from core.deps import require_data, require_writable, get_current_user
 from core.validation import validate_goal_text
 from goal_agent import GoalAgent
 from goal_agent.schema import load_user_overrides
@@ -485,6 +485,49 @@ def get_suggestions(request: Request, payload: dict | None = None, user: dict = 
     return {"ok": True, "provider": session.get("provider_name", provider), "suggestions": suggestions}
 
 
+def _csv_chat_store(session):
+    from csv_engine.chat_store import ChatStore, dataset_key
+    from csv_engine.profiling import _fingerprint
+    return ChatStore(auth.DB_PATH.with_name("csv_chats.sqlite3")), dataset_key(_fingerprint(session))
+
+
+@router.get("/api/csv/conversation")
+def restore_csv_conversation(request: Request, conversation_id: str | None = None, user: dict = Depends(get_current_user)):
+    from csv_engine.analyst import is_csv_session
+    session = get_session(user["user_id"])
+    if not is_csv_session(session) or not session.get("db_uri"):
+        return {"ok": True, "conversation": None}
+    store, dataset = _csv_chat_store(session)
+    chat = store.load(user["user_id"], dataset, conversation_id)
+    return {"ok": True, "conversation": {k: v for k, v in chat.items() if k != "history"} if chat else None}
+
+
+@router.post("/api/csv/conversation/new")
+def new_csv_conversation(request: Request, user: dict = Depends(require_writable)):
+    from csv_engine.analyst import is_csv_session
+    import uuid
+    session = get_session(user["user_id"])
+    if not is_csv_session(session) or not session.get("db_uri"):
+        return {"ok": True, "conversation_id": str(uuid.uuid4())}
+    store, dataset = _csv_chat_store(session)
+    identifier = str(uuid.uuid4())
+    store.save(user["user_id"], dataset, identifier, new=True)
+    return {"ok": True, "conversation_id": identifier}
+
+
+@router.delete("/api/csv/conversation/{conversation_id}")
+def delete_csv_conversation(conversation_id: str, user: dict = Depends(require_writable)):
+    from csv_engine.analyst import is_csv_session
+    session = get_session(user["user_id"])
+    if not is_csv_session(session) or not session.get("db_uri"):
+        raise HTTPException(status_code=400, detail="Connect the CSV first")
+    store, dataset = _csv_chat_store(session)
+    deleted = store.delete(user["user_id"], dataset, conversation_id)
+    session.get("csv_conversations", {}).pop(conversation_id, None)
+    save_session(user["user_id"], session)
+    return {"ok": True, "deleted": deleted}
+
+
 @router.post("/api/ask")
 def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writable)):
     """Run the Goal Agent: goal -> SQL -> processed_data.json.
@@ -502,10 +545,17 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
         import os
         import tempfile
         conv_id = req.conversation_id or session.get("conversation_id") or f"conv_{uuid.uuid4().hex}"
+        if not isinstance(conv_id, str) or not 1 <= len(conv_id) <= 100:
+            raise HTTPException(status_code=400, detail="Invalid conversation identifier")
         dataset_identity = _fingerprint(session)
+        chat_store, chat_dataset = _csv_chat_store(session)
         conversations = dict(session.get("csv_conversations", {}))
         active = conversations.get(conv_id, {})
         history = list(active.get("history", [])) if active.get("dataset") == dataset_identity else []
+        if not history:
+            saved_chat = chat_store.load(user["user_id"], chat_dataset, conv_id)
+            if saved_chat:
+                history = saved_chat["history"]
         try:
             result = ask_csv(session, user["user_id"], req.goal, history=history,
                              request_context={"metric": req.metric, "filters": req.filters,
@@ -540,6 +590,12 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
         else:
             history.append(conversation_turn(req.goal, result))
             session["conversation_history"] = history[-10:]
+        try:
+            chat_store.save(user["user_id"], chat_dataset, conv_id,
+                            context=conversation_turn(req.goal, result), display={"q": req.goal, "r": result})
+        except Exception:
+            log.exception("Could not persist CSV conversation")
+            result.setdefault("warnings", []).append("This answer could not be saved for chat restore.")
         conversations.pop(conv_id, None)
         conversations[conv_id] = {"dataset": dataset_identity, "history": history[-10:]}
         session["csv_conversations"] = dict(list(conversations.items())[-8:])

@@ -1,0 +1,4 @@
+order_id,order_date,city,quantity,revenue,cost,profit
+001,2026-09-01,Islamabad,50,150000,105000,45000
+002,2026-09-02,Karachi,15,45000,30000,15000
+003,2026-09-03,Lahore,25,90000,60000,30000

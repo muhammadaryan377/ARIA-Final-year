@@ -1,4 +1,4 @@
-# CSV analyst flow (version 4)
+# CSV analyst flow (version 5)
 
 Scope: CSV Dashboard, AI Analytics Ask, suggested questions, autocomplete and
 conversation persistence. Relational/PDF analytics and dedicated Copilot,
@@ -19,8 +19,8 @@ CSV parsing/import validation is retained; no model rewrites uploaded data.
   questions explicitly request an overview, not automatic clarification. Specific
   missing fields or genuinely conflicting meanings still require clarification.
 - Plan one to six complementary queries. Simple questions normally need one.
-  The model may request one investigation round after seeing initial results,
-  adding up to two queries. Maximum eight successful result sets and sixteen
+  The model may request up to three investigation rounds after seeing results,
+  adding up to two steps per round within the overall eight-result budget. Maximum eight successful result sets and sixteen
   SQL attempts including repairs. This is a bounded workflow, not an unlimited
   autonomous analyst. Statistical work uses supported SQLite aggregates,
   expressions and windows; arbitrary Python execution is not exposed.
@@ -113,9 +113,7 @@ The session stores up to eight CSV conversations, each bound to its dataset
 fingerprint, with ten turns each. The planner receives up to four recent turns
 within a bounded context budget, including prior answers and small result
 excerpts; omitted results require fresh SQL. Clarifications are included.
-Previous turns can be inspected in the current-chat panel. A page reload or
-remount starts a new UI chat; restoring full conversations from Recent is not
-part of this change. Successful analyses still persist in the history database.
+Previous turns can be inspected in the current-chat panel. A page reload restores the latest durable CSV chat for the same user and dataset. A new empty chat is also persisted. The separate Intelligence Recent view is not the CSV conversation browser. Successful analyses still persist in the history database.
 
 Follow-up resolution now runs as a separate traced LLM stage before SQL planning
 when chat history exists. It produces a self-contained question (or asks for
@@ -125,14 +123,14 @@ UI as Interpreted as. This adds a provider invocation per follow-up; scripted
 regression tests verify orchestration and filtered SQL results, not live model
 semantic accuracy.
 
-## Statistical discovery (version 4)
+## Statistical discovery (version 5)
 
 Implementation now lives in `csv_engine/`; former entrypoints are compatibility
 aliases. See its README for the module map. Existing data/history is unchanged.
 The model chooses distribution, robust outliers, Spearman relationships,
 group-versus-rest comparisons and daily change tools. Six combined SQL/tool
-steps (at most three tools) are allowed initially, plus two investigation steps.
-Statistics use the first 10,000 matching rows, explicitly not a random sample;
+steps (at most three tools) are allowed initially, plus up to two steps per investigation round within eight results overall.
+Statistics use up to 10,000 rows selected by uniform reservoir sampling (seed 42) after scanning all matching rows within a three-second sampling budget;
 SQL aggregates use the full connected dataset. Tool filters use bound parameters.
 
 Methods, scope and limitations accompany each result in Ask and Dashboard.
@@ -146,3 +144,39 @@ interpretations remain unverified. Actual computation regression tests:
 ```powershell
 python -m unittest discover -s tests -p test_csv_statistics.py -v
 ```
+
+## Review, reproducibility, and durable chats (version 5)
+
+Each successful Ask/Dashboard plan receives a separately traced semantic_review
+model pass. It checks source expressions, entities, dates, grain and scope. A
+rejected plan is replanned once with correction feedback; a second rejection
+fails explicitly. This uses the selected model, so it is not independent proof.
+Review sees bounded row excerpts, along with SQL/tool definitions and schema.
+SQL results are replayed on read-only connections and compared before narration;
+this confirms reproducibility, not that the chosen SQL answers the right question.
+Evidence shape and finite values are checked. verified remains false.
+
+Investigation runs at most three follow-up rounds, two steps per round, eight
+result sets total, sixteen planning SQL attempts and eight statistical attempts.
+Time is reserved before starting another investigation; budget stops are labeled.
+Replayed SQL is counted separately. Every provider call consumes the shared
+100-second soft budget; provider SDK behavior can extend wall-clock duration.
+
+The aggregate data-quality profile still describes its bounded prefix sample.
+Statistical tools now scan all matching rows to build a bounded uniform reservoir;
+if that scan times out they fail rather than present a prefix as representative.
+Rare segments can be missed. Daily-change analysis rejects sampled records;
+use narrowed filters or full-data SQL daily aggregates. Discovery rankings sort
+within each method by absolute observed effect. They are not calibrated scores
+of importance, confidence, or causality.
+
+Chats persist in data/csv_chats.sqlite3, scoped by authenticated user and dataset
+fingerprint. Latest twenty conversations per user, ten turns each; size limited
+to four MB per conversation. New analysis saves an empty new conversation.
+GET /api/csv/conversation restores the latest or a specified conversation;
+POST /api/csv/conversation/new starts a new one; DELETE with its ID removes one.
+Data/model credentials are never copied into this store. Result values are stored
+locally. Reuploading or changing the file identity intentionally starts fresh
+context. After session expiry, reconnect the same retained source before restore.
+
+See CSV_MORNING_TEST.md for exact validation commands and expected fixture results.

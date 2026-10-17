@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import date
 from itertools import combinations
 import math
+import random
 import statistics as st
 import time
 
@@ -71,15 +72,25 @@ def _sample(session, context, args):
     alias = '__aria_row'
     while alias.lower() in lowered:
         alias += '_'
-    sql = f'SELECT {row_id} AS {_quote(alias)}, ' + ', '.join(_quote(c) for c in selected) + f' FROM {_quote(context["table"])}{where} ORDER BY {row_id} LIMIT {MAX_SAMPLE + 1}'
+    sql = f'SELECT {row_id} AS {_quote(alias)}, ' + ', '.join(_quote(c) for c in selected) + f' FROM {_quote(context["table"])}{where} ORDER BY {row_id}'
     with _connection(session) as conn:
         deadline = time.monotonic() + 3
         conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-        records = [dict(r) for r in conn.execute(sql, params).fetchall()]
-    for record in records:
-        record[_ROW_KEY] = record.pop(alias)
-    truncated = len(records) > MAX_SAMPLE
-    return records[:MAX_SAMPLE], truncated, sql, params
+        records, count = [], 0
+        rng = random.Random(42)
+        for count, row in enumerate(conn.execute(sql, params), 1):
+            if count % 256 == 0 and time.monotonic() > deadline:
+                raise ValueError('Statistical sampling scan exceeded its time budget; narrow filters or use SQL aggregates')
+            if count <= MAX_SAMPLE:
+                records.append(dict(row))
+            else:
+                chosen = rng.randrange(count)
+                if chosen < MAX_SAMPLE:
+                    records[chosen] = dict(row)
+        for record in records:
+            record[_ROW_KEY] = record.pop(alias)
+        records.sort(key=lambda r: r[_ROW_KEY])
+    return records, count > MAX_SAMPLE, sql, params, count
 
 
 def run_tool(session, context, call):
@@ -89,11 +100,11 @@ def run_tool(session, context, call):
     args = call.get('arguments', {})
     if not isinstance(args, dict):
         raise ValueError('Tool arguments must be an object')
-    rows, truncated, sql, params = _sample(session, context, args)
+    rows, truncated, sql, params, matched_count = _sample(session, context, args)
     cols = args['columns']
     limits = ['Exploratory evidence; association or an unusual value does not establish cause, error or fraud.']
     if truncated:
-        limits.append('Uses the first 10000 matching rows in import order, not a random sample. Findings may not generalize to the full dataset.')
+        limits.append('Uses a reproducible uniform reservoir sample of 10000 matching rows (seed 42). Rare groups/events may be missed; population claims require further validation.')
     if len(rows) < 20:
         limits.append('Small dataset: estimates and anomaly labels are unstable.')
     output = []
@@ -119,6 +130,7 @@ def run_tool(session, context, call):
         if len(buckets) > 20:
             raise ValueError('Too many anomaly groups; choose at most twenty groups using filters')
         method = 'Per-group median absolute deviation, modified z-score > 3.5. If MAD is zero use 1.5 IQR fences; if both are zero flag departures from the constant baseline. Minimum eight valid rows per group.'
+        limits.append(f'{sum(not _number(r[col]) for r in rows)} non-numeric or missing values excluded.')
         excluded = 0
         for label, items in buckets.items():
             if len(items) < 8:
@@ -156,6 +168,7 @@ def run_tool(session, context, call):
         for r in rows:
             if r[group] is not None and _number(r[col]): buckets[r[group]].append(r[col])
         if len(buckets) > 20: raise ValueError('Group comparison supports up to twenty groups; choose a lower-cardinality column')
+        limits.append(f'{len(rows)-sum(len(items) for items in buckets.values())} rows with missing group or non-numeric measure excluded.')
         method = 'Each group versus remaining records: mean/median difference, Mann-Whitney U, rank-biserial effect; minimum eight per side; BH adjustment within this invocation.'
         for label, values in buckets.items():
             others = [v for k, items in buckets.items() if k != label for v in items]
@@ -169,6 +182,8 @@ def run_tool(session, context, call):
         limits.append('Exploratory dependent comparisons. Differences in distributions do not necessarily imply a median shift. Check group sizes, repeated observations and confounding; no causal claim.')
         if not output: status = 'insufficient_data'
     else:
+        if truncated:
+            raise ValueError('Daily-change checks require complete records; narrow the date/entity scope or use full-data SQL daily aggregates')
         if len(cols) != 1 or not args.get('date_column') or args.get('aggregation') not in ('sum','mean'):
             raise ValueError('Time changes requires one measure, date_column, and explicit sum or mean aggregation')
         col = cols[0]; dt = args['date_column']; buckets = defaultdict(list); excluded = 0
@@ -204,5 +219,5 @@ def run_tool(session, context, call):
     if any(isinstance(v,float) and not math.isfinite(v) for r in output for v in r.values()):
         raise ValueError('Statistical tool produced non-finite output')
     return {'tool': name, 'arguments': args, 'status': status, 'method': method, 'limitations': limits,
-            'sample_count': len(rows), 'sampled': truncated, 'sample_sql': sql, 'sql_parameters': params,
+            'sample_count': len(rows), 'matched_count': matched_count, 'sampling_method': 'uniform_reservoir' if truncated else 'complete', 'sampling_seed': 42 if truncated else None, 'sampled': truncated, 'sample_sql': sql, 'sql_parameters': params,
             'data': output, 'columns': list(output[0]) if output else []}

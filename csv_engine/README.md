@@ -14,12 +14,17 @@ through compatibility aliases at the former three entrypoints.
 | prompts.py | Planning and evidence-grounded explanation instructions |
 | statistics.py | Distribution, outlier, relationship, group and time tools |
 | discovery.py | Adapt statistical evidence to the result contract |
+| verification.py | Evidence integrity, SQL reproducibility and LLM semantic review |
+| investigation.py | Bounded multi-round follow-up investigation |
+| chat_store.py | Durable per-user, per-dataset conversation storage |
+| ranking.py | Within-method effect ranking for investigation |
+| evaluation.py | Offline oracle and opt-in live-model acceptance runner |
 | constants.py | Engine version and result limits |
 
 The LLM selects analyses; SQL and statistical tools compute values. Arbitrary
 model-generated Python is not executed. Results expose method and scope;
 semantic correctness and causal explanations are not certified.
-Statistics inspect at most 10,000 matching rows in import order. SQL aggregates
+Statistical tools inspect a reproducible uniform reservoir sample of at most 10,000 matching rows after scanning all matches within a time budget. Daily-change tools require complete data. SQL aggregates
 can inspect the complete source. Analysis never modifies uploaded values.
 Conversation context remains scoped to the current chat and dataset. Separate
 relational/PDF and other independent app pipelines are outside this package.

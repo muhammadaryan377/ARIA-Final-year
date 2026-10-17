@@ -8,7 +8,7 @@ export default function CsvStatisticalEvidence({ result, showTable = false }: Pr
   return <div className="space-y-2 mt-3 text-xs">
     <p className="font-medium">Exploratory statistical evidence</p>
     <p>{evidence.method}</p>
-    <p className="text-muted-foreground">Examined {evidence.sample_count?.toLocaleString()} matching records{evidence.sampled ? " (bounded sample; not randomly selected)" : ""}.</p>
+    <p className="text-muted-foreground">Examined {evidence.sample_count?.toLocaleString()} records out of {evidence.matched_count?.toLocaleString() ?? evidence.sample_count?.toLocaleString()} matching records{evidence.sampled ? " (reproducible random sample)" : ""}.</p>
     {evidence.status === "insufficient_data" && <p>Not enough usable observations for this check.</p>}
     {evidence.status === "no_candidates" && <p>No candidates met this method’s criteria. Other patterns may still exist.</p>}
     {showTable && rows.length > 0 && <div className="max-h-80 overflow-auto"><table className="w-full text-left"><thead><tr>{columns.map(col => <th className="p-2 border-b" key={col}>{col.replace(/_/g, " ")}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map(col => <td key={col} className="p-2 border-b">{row[col] == null ? "Unavailable" : typeof row[col] === "number" ? row[col].toLocaleString(undefined, { maximumSignificantDigits: 10 }) : String(row[col])}</td>)}</tr>)}</tbody></table></div>}

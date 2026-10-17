@@ -1728,6 +1728,14 @@ export default function Dashboard({ setPage, onAsk, user, connectionStatus = "no
           <p className="mt-2 text-xs">{config.llm_trace?.cached ? "Cached analysis" : "Fresh analysis"} · {config.llm_trace?.provider}</p>
         </details>}
 
+        {config?.validation && <details className="rounded-2xl border border-border bg-card p-4 text-xs">
+          <summary className="cursor-pointer font-semibold">Analysis checks and review</summary>
+          {(config.validation.checks || []).map((check: any, i: number) => <p className="mt-2" key={i}>{check.detail}</p>)}
+          <p className="mt-2">AI review: {config.validation.semantic_review?.status}. {config.validation.semantic_review?.reason}</p>
+          <p className="mt-2 text-muted-foreground">Model review is not independent semantic verification.</p>
+        </details>}
+        {config?.ranked_insights?.length > 0 && <details className="rounded-2xl border border-border bg-card p-4 text-xs"><summary className="cursor-pointer font-semibold">Patterns to investigate</summary>{config.ranked_insights.map((item: any, i: number) => <p className="mt-2" key={i}>{item.title} — {item.effect_measure.replace(/_/g, " ")}: {item.largest_absolute_effect ?? "Unavailable"}. {item.note}</p>)}</details>}
+
         {(config?.statistical_insights || []).map((result: any, index: number) => <section key={index} className="rounded-2xl border border-border bg-card p-4">
           <h3 className="font-semibold">{result.title}</h3>
           <p className="text-sm text-muted-foreground mt-1">{result.reason}</p>

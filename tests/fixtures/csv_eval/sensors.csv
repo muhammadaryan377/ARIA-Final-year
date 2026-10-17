@@ -1,0 +1,5 @@
+reading_id,station,reading,capacity
+1,North,10,0
+2,North,20,0
+3,South,,0
+4,South,30,0

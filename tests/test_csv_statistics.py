@@ -13,6 +13,10 @@ from test_csv_llm_service import Provider
 
 class StatisticalTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        reviewer = patch('csv_engine.analyst.review_plan', return_value={'status': 'accepted', 'reason': 'Scripted test review', 'checks': ['fixture'], 'independently_verified': False})
+        reviewer.start()
+        self.addCleanup(reviewer.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'patterns.db'
         self.session = {'db_name': 'facts', 'db_uri': 'sqlite:///' + str(self.path), 'provider_name': 'cloud'}
@@ -100,7 +104,8 @@ class StatisticalTests(unittest.TestCase):
         r = self.tool('distribution', columns=['value'])
         self.assertTrue(r['sampled'])
         self.assertEqual(r['sample_count'],10000)
-        self.assertIn('not a random sample',' '.join(r['limitations']))
+        self.assertEqual(r['sampling_method'], 'uniform_reservoir')
+        self.assertEqual(r['matched_count'], 10120)
 
     def test_tool_planning_and_grounded_explanation(self):
         tool = {'tool':'group_comparison','title':'Segment differences','reason':'Compare values across segments',

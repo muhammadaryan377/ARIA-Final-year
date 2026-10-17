@@ -3,6 +3,9 @@
 No keyword-based metric selection, SQL rewriting, or template fallback.
 Provider invocations are traced; SDK-internal retry/token counts are unknown.
 """
+from .ranking import rank_findings
+from .verification import review_plan, validate_evidence
+from .investigation import investigate
 from .prompts import PLAN_PROMPT, NARRATE_PROMPT
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -182,7 +185,7 @@ def _plan(run, session, context, question, history=None, dashboard=False, reques
             return {"status": "clarification", "clarification": _text(obj.get("clarification"), 1000), "queries": []}
         queries = obj.get("queries", [])
         tools = obj.get("tools", [])
-        if not isinstance(queries, list) or not isinstance(tools, list) or len(tools) > 3 or not (0 if previous else 1) <= len(queries) + len(tools) <= (2 if previous else 6):
+        if not isinstance(queries, list) or not isinstance(tools, list) or len(tools) > 3 or not (0 if previous else 1) <= len(queries) + len(tools) <= (min(2, MAX_QUERIES - len(previous["queries"])) if previous else 6):
             raise ValueError("Invalid query/tool count: at most six combined steps, three tools, or two follow-up steps")
         validated = []
         seen = {(q.get("sql") or "").strip().rstrip(";").lower() for q in (previous or {}).get("queries", [])}
@@ -220,7 +223,8 @@ def _plan(run, session, context, question, history=None, dashboard=False, reques
                 raise ValueError("Dashboard cards require one row of numeric measures")
             validated.append({"title": title, "reason": reason, "sql": q["sql"], "measures": measures,
                               "dimensions": dimensions, "chart": chart, "columns": columns, "data": rows})
-        tool_seen = set()
+        tool_seen = {json.dumps([q['statistical_evidence']['tool'], q['statistical_evidence']['arguments']], sort_keys=True)
+                     for q in (previous or {}).get('queries', []) if q.get('statistical_evidence')}
         for call in tools:
             if not isinstance(call, dict):
                 raise ValueError("Statistical tool call must be an object")
@@ -290,6 +294,40 @@ def _verdict():
             "warnings": ["Metric meaning and qualitative interpretation are LLM-generated and are not independently verified."]}
 
 
+def _review_and_repair(run, session, context, question, plan, dashboard=False, request_context=None):
+    integrity = validate_evidence(plan)
+    review = review_plan(run, plan, question, context)
+    if review['status'] == 'revise':
+        correction = {**(request_context or {}), 'review_correction': review['reason']}
+        plan = _plan(run, session, context, question, [], dashboard=dashboard, request_context=correction)
+        if plan['status'] != 'ready':
+            raise CsvAnalysisError(plan['clarification'], run.trace)
+        integrity = validate_evidence(plan)
+        review = review_plan(run, plan, question, context)
+        if review['status'] != 'accepted':
+            raise CsvAnalysisError('The analysis did not pass semantic review. ' + review['reason'], run.trace)
+        plan['investigation_complete'] = not plan.get('needs_investigation', False)
+        run.trace['investigation_after_review'] = 'not_run'
+        if plan.get('needs_investigation'):
+            plan.setdefault('understanding', {}).setdefault('limitations', []).append('The revised plan has not undergone further investigation.')
+    replayed = 0
+    for query in plan['queries']:
+        if not query.get('sql'):
+            continue
+        if run.deadline - time.monotonic() < 8:
+            raise CsvAnalysisError('Not enough time remains to check the SQL results. Narrow the question.', run.trace)
+        columns, rows = _execute(session, context, query['sql'])
+        canonical = lambda records: sorted(json.dumps(row, sort_keys=True, allow_nan=False) for row in records)
+        if columns != query['columns'] or canonical(rows) != canonical(query['data']):
+            raise CsvAnalysisError('SQL results changed during validation. Reconnect or retry on a stable dataset.', run.trace)
+        replayed += 1
+    run.trace['verification_query_count'] = replayed
+    integrity.append({'name': 'sql_reproducibility', 'pass': True,
+                      'detail': f'{replayed} SQL result sets reproduced on the connected source. This checks stability, not metric meaning.'})
+    plan['validation'] = {'checks': integrity, 'semantic_review': review, 'verified': False}
+    return plan
+
+
 def dashboard(session, user_id):
     context = _context(session)
     path = Path(session["db_uri"][len("sqlite:///"):]).resolve()
@@ -306,6 +344,8 @@ def dashboard(session, user_id):
     plan = _plan(run, session, context, "Build a useful overview of this CSV using its actual schema.", dashboard=True)
     if plan["status"] != "ready":
         raise CsvAnalysisError(plan["clarification"], run.trace)
+    plan = investigate(run, plan, lambda previous: _plan(run, session, context, "Build a useful overview of this CSV using its actual schema.", dashboard=True, previous=previous))
+    plan = _review_and_repair(run, session, context, "Build a useful overview of this CSV using its actual schema.", plan, dashboard=True)
     session["csv_dataset_understanding"] = plan.get("understanding", {})
     narrative = _narrate(run, plan, "Summarize the dataset", context)
     metrics, charts, discoveries = [], [], []
@@ -333,8 +373,8 @@ def dashboard(session, user_id):
                            for i, f in enumerate(narrative["findings"])],
               "dataset_profile": context, "dataset_understanding": plan.get("understanding", {}),
               "quality": {"score": None, "issues": context["profile"]["issues"]}, "recommendations": [],
-              "suggested_questions": narrative["followups"], "analysis_plan": plan,
-              "verdict": _verdict(), "llm_trace": run.trace}
+              "suggested_questions": narrative["followups"], "analysis_plan": plan, "ranked_insights": rank_findings(plan["queries"]),
+              "validation": plan.get("validation"), "verdict": _verdict(), "llm_trace": run.trace}
     session["csv_llm_suggestions"] = {"key": copy.deepcopy(_suggestion_key(session)), "questions": narrative["followups"]}
     run.trace["sql_execution_count"] = run.query_count
     session["csv_llm_dashboard"] = {"key": key, "config": copy.deepcopy(config)}
@@ -358,19 +398,8 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
                 "question": plan["clarification"], "message": plan["clarification"], "answer": plan["clarification"],
                 "data": [], "columns": [], "row_count": 0, "sql_used": None, "result_valid": False,
                 "llm_trace": run.trace, "suggested_questions": [], "user_goal": question}
-    if plan.get("needs_investigation"):
-        extra = _plan(run, session, context, resolved_question, [], request_context=request_context, previous=plan)
-        if extra["status"] == "ready":
-            plan["queries"].extend(extra["queries"])
-            for field in ("assumptions", "limitations"):
-                initial = plan.setdefault("understanding", {}).setdefault(field, [])
-                initial.extend(v for v in extra.get("understanding", {}).get(field, []) if v not in initial)
-            plan["investigation_complete"] = not extra.get("needs_investigation", False)
-        else:
-            plan.setdefault("understanding", {}).setdefault("limitations", []).append(extra["clarification"])
-        plan["needs_investigation"] = False
-    if len(plan["queries"]) > MAX_QUERIES:
-        raise CsvAnalysisError("Analysis exceeds the query budget.", run.trace)
+    plan = investigate(run, plan, lambda previous: _plan(run, session, context, resolved_question, [], request_context=request_context, previous=previous))
+    plan = _review_and_repair(run, session, context, resolved_question, plan, request_context=request_context)
     narrative = _narrate(run, plan, resolved_question, context)
     if not session.get("csv_dataset_understanding"):
         session["csv_dataset_understanding"] = plan.get("understanding", {})
@@ -396,7 +425,7 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
             "user_goal": question, "resolved_question": resolved_question, "context_resolution": resolution, "message": narrative["answer"], "answer": narrative["answer"],
             "story": narrative["answer"], "findings": narrative["findings"], "data": q["data"],
             "columns": q["columns"], "row_count": len(q["data"]), "sql_used": q["sql"],
-            "analysis_plan": plan, "analysis_results": results, "dataset_profile": context,
+            "analysis_plan": plan, "ranked_insights": rank_findings(plan["queries"]), "analysis_results": results, "dataset_profile": context,
             "dataset_understanding": plan.get("understanding", {}), "dimensions": q["dimensions"], "chart_spec": chart, "visualization": chart,
             "data_selection": {"tables": [context["table"]], "columns": q["columns"]},
             "metric": q["title"], "execution": {"success": True, "row_count": len(q["data"])},
@@ -407,7 +436,7 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
                            "queries": all_evidence, "methodology": "LLM-planned SQL and statistical tools; read-only SQLite; LLM explanation with result-cell references."},
             "why": {"what_happened": narrative["answer"], "evidence": all_evidence, "comparisons": [],
                     "limitations": limitations},
-            "result_valid": True, "confidence": "unverified", "verdict": _verdict(),
+            "result_valid": True, "confidence": "unverified", "validation": plan.get("validation"), "verdict": _verdict(),
             "warnings": context["profile"]["issues"], "limitations": limitations,
             "llm_trace": run.trace, "timestamp": datetime.now(timezone.utc).isoformat(), "analysis_source": "csv_llm"}
 

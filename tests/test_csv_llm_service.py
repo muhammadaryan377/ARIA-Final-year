@@ -47,6 +47,10 @@ STORY = {"answer": "Revenue is {{0:0:total_revenue}} and profit is {{0:0:total_p
 
 class CsvLlmTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        reviewer = patch('csv_engine.analyst.review_plan', return_value={'status': 'accepted', 'reason': 'Scripted test review', 'checks': ['fixture'], 'independently_verified': False})
+        reviewer.start()
+        self.addCleanup(reviewer.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'test.db'
         with sqlite3.connect(self.path) as conn:
@@ -197,7 +201,10 @@ class CsvLlmTests(unittest.TestCase):
                 self.status_code, self.detail = status_code, detail
         saved = Mock()
         auth = SimpleNamespace(add_history=Mock(return_value=42))
-        namespace = {'get_session': lambda uid: self.session, 'require_data': lambda r: 'cloud',
+        from csv_engine.chat_store import ChatStore, dataset_key
+        from csv_engine.profiling import _fingerprint
+        store = ChatStore(Path(self.tmp.name) / 'chats.db')
+        namespace = {'_csv_chat_store': lambda session: (store, dataset_key(_fingerprint(session))), 'get_session': lambda uid: self.session, 'require_data': lambda r: 'cloud',
                      'Path': Path, 'json': json, 'auth': auth, 'save_session': saved,
                      'HTTPException': HTTPError, 'log': logging.getLogger('csv_route_test')}
         exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), str(source), 'exec'), namespace)
