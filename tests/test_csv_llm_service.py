@@ -368,7 +368,7 @@ class CsvLlmTests(unittest.TestCase):
 
 
     def test_current_chat_followup_receives_prior_answer_and_values(self):
-        p = self.provider(PLAN, STORY, PLAN, STORY)
+        p = self.provider(PLAN, STORY, {'question': 'Repeat total revenue and total profit', 'uses_history': True}, PLAN, STORY)
         route, req, _, _, _ = self._ask_route()
         route(None, req, {'user_id': 7})
         req.goal = 'What were those totals again?'
@@ -390,13 +390,32 @@ class CsvLlmTests(unittest.TestCase):
         self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 1)
 
     def test_returning_to_existing_chat_restores_only_its_context(self):
-        self.provider(PLAN, STORY, PLAN, STORY, PLAN, STORY)
+        self.provider(PLAN, STORY, PLAN, STORY, {'question': 'Total revenue and profit', 'uses_history': False}, PLAN, STORY)
         route, req, _, _, _ = self._ask_route()
         route(None, req, {'user_id': 7})
         req.conversation_id = 'second-chat'
         route(None, req, {'user_id': 7})
         req.conversation_id = 'new-conversation'
         self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 2)
+
+
+    def test_followup_resolution_preserves_winning_city_filter(self):
+        history = [{'goal': 'Which city has highest revenue?', 'answer': 'B has highest revenue at 300.'}]
+        filtered = {'status': 'ready', 'queries': [query("SELECT SUM(profit) AS profit FROM facts WHERE city='B'", ['profit'])]}
+        p = self.provider({'question': 'What is total profit for city B?', 'uses_history': True}, filtered,
+                          {'answer': 'Profit for B is {{0:0:profit}}.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'What is its profit?', history=history)
+        self.assertEqual(result['data'], [{'profit': 90}])
+        self.assertEqual(result['resolved_question'], 'What is total profit for city B?')
+        self.assertEqual(result['llm_trace']['calls'][0]['stage'], 'question_resolution')
+        plan_payload = ''.join(m['content'] for m in p.calls[1][1])
+        self.assertIn('What is total profit for city B?', plan_payload)
+
+    def test_unclear_reference_asks_instead_of_querying_all_rows(self):
+        p = self.provider({'clarification': 'Do you mean A or B?'})
+        result = ask_csv(self.session, 7, 'Its profit?', history=[{'answer': 'A and B were compared.'}])
+        self.assertEqual(result['status'], 'clarification')
+        self.assertEqual(len(p.calls), 1)
 
 
 if __name__ == '__main__':

@@ -116,3 +116,11 @@ excerpts; omitted results require fresh SQL. Clarifications are included.
 Previous turns can be inspected in the current-chat panel. A page reload or
 remount starts a new UI chat; restoring full conversations from Recent is not
 part of this change. Successful analyses still persist in the history database.
+
+Follow-up resolution now runs as a separate traced LLM stage before SQL planning
+when chat history exists. It produces a self-contained question (or asks for
+clarification), preserving referenced entities while allowing metric changes.
+The resolved question is used by planning and explanation and displayed in the
+UI as Interpreted as. This adds a provider invocation per follow-up; scripted
+regression tests verify orchestration and filtered SQL results, not live model
+semantic accuracy.

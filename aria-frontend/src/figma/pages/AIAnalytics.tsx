@@ -1434,6 +1434,7 @@ export default function AIAnalytics({
                     </button>
                     {reportMsg && <span className="text-[11.5px] text-secondary-foreground" role="status">{reportMsg}</span>}
                   </div>
+                  {gd?.context_resolution?.uses_history && <p className="text-xs text-muted-foreground px-1">Interpreted as: {gd.resolved_question}</p>}
                   {/* Answer message */}
                   {answerMessage && (
                     <Card className="p-5">

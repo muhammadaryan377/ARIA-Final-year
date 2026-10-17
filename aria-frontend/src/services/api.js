@@ -782,6 +782,8 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
       : [];
 
   const goalData = {
+    resolved_question: data?.resolved_question || null,
+    context_resolution: data?.context_resolution || null,
     analysis_results: Array.isArray(data?.analysis_results) ? data.analysis_results : [],
     analysis_plan: data?.analysis_plan || null,
     dataset_profile: data?.dataset_profile || null,
