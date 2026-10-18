@@ -468,6 +468,17 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
     context = _context(session)
     run = _Run(_provider(session), user_id)
     resolution = _resolve_question(run, question, history)
+    if resolution.get('mode') == 'recall':
+        run.trace['analysis_mode'] = 'conversation_recall'
+        return {'ok': True, 'status': 'conversation', 'result_status': 'conversation',
+                'analysis_source': 'csv_chat_history', 'user_goal': question,
+                'resolved_question': question, 'context_resolution': resolution,
+                'answer': resolution['answer'], 'message': resolution['answer'],
+                'data': [], 'columns': [], 'row_count': 0, 'sql_used': None,
+                'result_valid': False, 'suggested_questions': [], 'llm_trace': run.trace,
+                'provenance': {'source': 'current_chat', 'source_goal': resolution['source_goal'],
+                               'methodology': 'Exact excerpt from a saved answer; no fresh data analysis.'},
+                'limitations': ['This recalls a previous answer and does not independently verify its claims.']}
     resolved_question = resolution.get("question", question)
     if resolution.get("clarification"):
         plan = {"status": "clarification", "clarification": resolution["clarification"]}

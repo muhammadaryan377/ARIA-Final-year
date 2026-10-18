@@ -1474,6 +1474,7 @@ export default function AIAnalytics({
                   </div>
                   {gd?.context_resolution?.uses_history && <p className="text-xs text-muted-foreground px-1">Interpreted as: {gd.resolved_question}</p>}
                   {gd?.narrative_status === "unavailable" && <p role="status" className="text-sm text-amber-700">Calculation available · AI explanation unavailable. The tables below contain the executed results.</p>}
+                  {gd?.context_resolution?.mode === "recall" && <p className="text-xs text-muted-foreground">Recalled from this chat · no new calculation performed</p>}
                   {/* Answer message */}
                   {answerMessage && (
                     <Card className="p-5">
