@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listDocuments, deleteDocument, retryDocument, searchDocuments } from "../../services/api";
+import DocumentChat from "../components/DocumentChat";
 import { useToast } from "../../components/Toast";
 
 function StatusPill({ status }: { status?: string }) {
@@ -122,6 +123,8 @@ export default function Documents() {
           {documents.length} {documents.length === 1 ? "document" : "documents"}
         </div>
       </div>
+
+      <DocumentChat documents={documents} />
 
       <div className="premium-card rounded-2xl p-4">
         <div className="flex gap-2 items-center">
