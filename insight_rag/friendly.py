@@ -28,8 +28,6 @@ class InsightPDFRAG(BaseInsightPDFRAG):
 
     def __init__(self, *, insight_agent, user_id: str | int):
         super().__init__(insight_agent=insight_agent, user_id=user_id)
-        self.llm.models["rag_verify"] = RAG_LLM_MODEL
-        self.llm.models["rag_plan"] = RAG_LLM_MODEL
         self.context_engine = ContextEngineer()
 
     # ------------------------------------------------------------------
@@ -605,7 +603,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 search_query=search_query,
                 retrieval=retrieval_name,
                 evidence_status="service_unavailable",
-                model=RAG_LLM_MODEL,
+                model=self.llm.models.get("rag"),
                 context_plan={**plan_payload, "search_queries": queries},
             )
 
@@ -629,7 +627,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 search_query=search_query,
                 retrieval=retrieval_name,
                 evidence_status="verification_unavailable" if unavailable else "insufficient",
-                model=RAG_LLM_MODEL,
+                model=self.llm.models.get("rag"),
                 context_plan={**plan_payload, "search_queries": queries},
             )
 
@@ -669,7 +667,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                             "in a moment."),
                     intent="document_query", document_ids=selected_ids,
                     search_query=search_query, retrieval=retrieval_name,
-                    evidence_status="model_unavailable", model=RAG_LLM_MODEL,
+                    evidence_status="model_unavailable", model=self.llm.models.get("rag"),
                     context_plan={**plan_payload, "search_queries": queries},
                 )
             integrity = citation_integrity(answer, sources)
@@ -692,7 +690,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
             conversation_id=conversation_id, question=question, answer=answer,
             intent="document_query", document_ids=selected_ids, sources=sources,
             search_query=search_query, retrieval=retrieval_name,
-            evidence_status=evidence_status, model=RAG_LLM_MODEL,
+            evidence_status=evidence_status, model=self.llm.models.get("rag"),
             context_plan={**plan_payload, "search_queries": queries},
         )
         if plan.broad_query:

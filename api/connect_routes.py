@@ -25,7 +25,6 @@ from core.deps import require_writable, get_current_user
 from core.secret_box import decrypt as _decrypt_secret
 from csv_handler import CsvValidationError
 from llm_provider import create_provider
-from document_processor import create_document_processor
 
 router = APIRouter()
 
@@ -1180,8 +1179,7 @@ def connect_pdf(
     
     The PDF is processed through ARIA's document intelligence pipeline:
     - Validation and integrity check
-    - Document type detection (digital, scanned, handwritten, mixed)
-    - Content extraction (text, OCR, vision LLM)
+    - Text-PDF extraction (scanned PDFs are rejected; OCR is out of scope)
     - Table extraction
     - Chunking with metadata
     - Embedding generation
@@ -1255,160 +1253,40 @@ def connect_pdf(
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Could not read uploaded PDF.")
 
-    # Create document processor (dirs isolated per authenticated user).
-    processed_dir = _pdf_upaths["documents_dir"]
-    vector_index_dir = _pdf_upaths["processed_dir"] / "vector_store"
-    vector_index_dir.mkdir(parents=True, exist_ok=True)
-    
-    processor = create_document_processor(
-        upload_dir=upload_dir,
-        processed_dir=processed_dir,
-        llm_provider=llm if provider in HOSTED_PROVIDERS else None,
-    )
-    
-    # Process document (this runs synchronously - could be made async with background tasks)
-    result = processor.process_document(
-        file_path=file_path,
-        user_id=user["user_id"],
-        original_name=filename,
-    )
-    
-    if not result.success:
+    # One canonical extraction + PGVector indexing path. No OCR or duplicate FAISS work.
+    from insight_rag.ingestion import PDFIngestion
+    try:
+        ingested = PDFIngestion(user["user_id"]).ingest_pdf(file_path, original_filename=filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        import logging
+        logging.getLogger("aria.connect").exception("PDF indexing failed")
+        raise HTTPException(status_code=503, detail="PDF indexing failed. Check the RAG database and embedding model, then retry.") from exc
+    finally:
         file_path.unlink(missing_ok=True)
-        # Size/page-limit violations are 413 (not 500): spool layer catches
-        # oversized bodies; processor backup catches 50MB/500pp violations.
-        _err = str(result.error or "").lower()
-        if ("too large" in _err or "too many pages" in _err
-                or "exceed" in _err or "max 50mb" in _err or "max 500" in _err):
-            raise HTTPException(status_code=413, detail=result.error or "PDF exceeds the 50 MB / 500-page limit.")
-        raise HTTPException(status_code=500, detail=result.error or "Document processing failed")
-    
-    document = result.document
-
-    # Update session to include document reference
-    session = get_session(user["user_id"])
-    # Multi-source (§7): a PDF upload must not destroy a live database
-    # connection. Stash the queryable relational/file source so Copilot can
-    # answer from both (with per-source attribution) in one session.
-    try:
-        _prev_uri = session.get("db_uri") or ""
-        _prev_type = session.get("db_type", "")
-        if _prev_type in ("postgresql", "mysql", "sqlite") and not str(_prev_uri).startswith("document://"):
-            _sp = session.get("schema_path")
-            _stash: dict = {
-                "db": session.get("db"),
-                "db_type": _prev_type,
-                "db_name": session.get("db_name"),
-                "dialect": session.get("dialect", _prev_type),
-                "source_type": session.get("source_type"),
-                "schema_path": str(_sp) if _sp else None,
-            }
-            # File-based sqlite URIs carry no secret and are safe to stash;
-            # relational URIs embed the password and are rebuilt instead.
-            if _prev_type == "sqlite":
-                _stash["db_uri"] = _prev_uri
-            session["linked_db"] = _stash
-    except Exception:
-        pass
-    # A new document connection must honour the provider selected for this upload.
-    session["provider"] = llm
-    session["provider_name"] = provider
-    session["source_type"] = "document"
-    session["db"] = {".pdf": str(file_path)}
-    session["db_type"] = "document"
-    session["db_uri"] = f"document://{document.id}"
-    session["db_name"] = document.id
-    session["dialect"] = "document"
-    session["document_id"] = document.id
-    session["document_name"] = filename
-    session["document_type"] = document.document_type.value if document.document_type else "unknown"
-
-    # Structured PDF tables become queryable SQLite + schema mapping (§5/§15).
-    # RAG over the narrative keeps working regardless.
-    pdf_tables_loaded: list[str] = []
-    try:
-        _pdf_uri, _pdf_mapping, pdf_tables_loaded = _pdf_tables_to_sqlite(
-            document, upload_dir, safe_name, stamp)
-        if _pdf_uri and _pdf_mapping:
-            _safe_db = re.sub(r"[^a-zA-Z0-9_-]+", "_", f"pdf_{safe_name}")[:64] or "pdf_doc"
-            _schema_path = _pdf_upaths["schema_dir"] / f"schema_mapping_{_safe_db}_latest.json"
-            _schema_path.write_text(json.dumps({
-                "database": _safe_db,
-                "tables": _pdf_mapping,
-            }, indent=2), encoding="utf-8")
-            session["source_type"] = "semi-structured"
-            session["db"] = {"document_tables": _pdf_uri}
-            session["db_type"] = "sqlite"
-            session["db_uri"] = _pdf_uri
-            session["db_name"] = _safe_db
-            session["dialect"] = "sqlite"
-            session["schema_path"] = _schema_path
-    except Exception:
-        pass
-
-    if not pdf_tables_loaded:
-        # Text-only PDF: stay a `document` source and drop every stale
-        # analytical pointer (schema/db/artifact refs from a previous
-        # connection). SQL analytics must never run against the old source.
-        for _key in ("schema_path", "processed_path", "insights_path",
-                     "schema_status", "pending_history_id", "file_type"):
-            session.pop(_key, None)
-        session["schema_status"] = "document"
-    
-    # Ensure processed directories exist
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    vector_index_dir.mkdir(parents=True, exist_ok=True)
-
-    # Bridge (§7/§21): mirror the manifest + text chunks into the shared RAG
-    # metadata store so Copilot's document/combined branches read the same
-    # content the Documents page indexed. Best-effort; never fails the upload.
-    try:
-        from insight_rag.storage import RAGMetadataStore as _RAGStore
-        from langchain_core.documents import Document as _LCDocument
-        _rag = _RAGStore(user["user_id"])
-        _rag.put_document({
-            "document_id": document.id,
-            "filename": filename,
-            "original_filename": filename,
-            "document_type": document.document_type.value if document.document_type else "unknown",
-            "page_count": document.page_count,
-            "chunk_count": len(document.chunks),
-            "created_at": document.created_at,
-            "source": "upload",
-        })
-        _lcdocs = [_LCDocument(
-            page_content=c.content or "",
-            metadata={"page": c.page_number, "section": c.section,
-                      "chunk_id": c.id, "document_id": document.id},
-        ) for c in (document.chunks or []) if (c.content or "").strip()]
-        if _lcdocs:
-            _rag.save_chunks(document.id, _lcdocs)
-    except Exception as _bridge_exc:
-        import logging as _logging
-        _logging.getLogger("aria.connect").info(
-            "RAG store mirroring skipped (%s).", type(_bridge_exc).__name__)
-
+    doc = ingested["document"]
+    if session.get("db_type") in ("postgresql", "mysql", "sqlite"):
+        linked = {key: session.get(key) for key in ("db", "db_type", "db_name", "dialect", "source_type")}
+        linked["schema_path"] = str(session["schema_path"]) if session.get("schema_path") else None
+        if session.get("db_type") == "sqlite":
+            linked["db_uri"] = session.get("db_uri")
+        session["linked_db"] = linked
+    for key in ("schema_path", "processed_path", "insights_path", "pending_history_id", "file_type"):
+        session.pop(key, None)
+    session.update(provider=llm, provider_name=provider, source_type="document",
+                   db={"document": doc["document_id"]}, db_type="document",
+                   db_uri=f"document://{doc['document_id']}", db_name=doc["document_id"],
+                   dialect="document", document_id=doc["document_id"], document_name=filename,
+                   document_type="digital", schema_status="document")
     save_session(user["user_id"], session)
-    
-    return {
-        "ok": True,
-        "provider": provider,
-        "source_type": "document",
-        "file": filename,
-        "type": "pdf",
-        "document_id": document.id,
-        "document_type": document.document_type.value if document.document_type else "unknown",
-        "page_count": document.page_count,
-        "element_count": len(document.elements),
-        "chunk_count": len(document.chunks),
-        "table_count": len(document.tables),
-        "tables_loaded": pdf_tables_loaded,
-        "queryable": bool(pdf_tables_loaded),
-        "status": document.status.value,
-        "processing_method": document.processing_method,
-        "failed_pages": result.failed_pages,
-        "warnings": result.warnings,
-    }
+    return {"ok": True, "provider": provider, "source_type": "document", "file": filename,
+            "type": "pdf", "document_id": doc["document_id"], "document_type": "digital",
+            "page_count": doc.get("pages", 0), "chunk_count": doc.get("total_chunks", 0),
+            "table_count": doc.get("tables", 0), "element_count": doc.get("text_chunks", 0),
+            "tables_loaded": [], "queryable": False, "status": "ready",
+            "processing_method": "text_pdf_pgvector", "duplicate": ingested.get("duplicate", False),
+            "failed_pages": [], "warnings": []}
 
 
 @router.get("/api/session/status")

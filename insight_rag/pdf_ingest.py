@@ -130,6 +130,10 @@ def extract_pdf_documents(
 
     with fitz.open(path) as fitz_doc, pdfplumber.open(path) as plumber_doc:
         page_count = len(fitz_doc)
+        if page_count > 500:
+            raise ValueError("PDF exceeds the 500-page limit.")
+        if fitz_doc.needs_pass:
+            raise ValueError("Password-protected PDFs must be unlocked before uploading.")
         for page_index in range(page_count):
             page_number = page_index + 1
             page_text = _clean_text(fitz_doc[page_index].get_text("text"))

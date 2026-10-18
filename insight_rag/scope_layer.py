@@ -290,11 +290,11 @@ class InsightPDFRAG(FinalInsightPDFRAG):
         if decision.scope == "SYSTEM":
             answer = self._system_context_answer(question, history)
             intent = "system"
-            model = RAG_LLM_MODEL
+            model = self.llm.models.get("rag")
         elif decision.scope == "CONVERSATION":
             answer = self._conversation_answer(question, history, documents)
             intent = "smalltalk"
-            model = RAG_LLM_MODEL
+            model = self.llm.models.get("rag")
         elif decision.scope == "CLARIFICATION":
             answer = decision.clarification_question or (
                 "Could you clarify whether you're asking about ARIA itself or information from an uploaded PDF?"

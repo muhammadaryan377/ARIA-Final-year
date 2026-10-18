@@ -247,7 +247,7 @@ class InsightPDFRAG(GroundedInsightPDFRAG):
             instruction = (transform_instruction or question).strip()
             try:
                 answer = self._transform_previous_answer(instruction, previous)
-                model = RAG_LLM_MODEL
+                model = self.llm.models.get("rag")
             except Exception:
                 failed = True
                 previous_sources, previous_doc_ids = [], []
@@ -255,7 +255,7 @@ class InsightPDFRAG(GroundedInsightPDFRAG):
                     "I'm having trouble safely reshaping the previous answer right now. "
                     "The original grounded answer is still available just above."
                 )
-                model = RAG_LLM_MODEL
+                model = self.llm.models.get("rag")
         else:
             answer = "Could you clarify what you want me to do with my previous answer?"
             model = None

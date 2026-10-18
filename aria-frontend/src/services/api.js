@@ -522,7 +522,7 @@ export const connectFile = async (file, provider = "local") => {
 // PDF DOCUMENT CONNECTION
 // =========================================================
 
-export const connectPdf = async (file, provider = "local") => {
+export const connectPdf = async (file, provider) => {
   if (!file) {
     return { success: false, message: "No file selected." };
   }
@@ -531,7 +531,7 @@ export const connectPdf = async (file, provider = "local") => {
   formData.append("file", file);
   try {
     const data = await request("/connect_pdf", { method: "POST", body: formData });
-    return { success: true, message: "PDF uploaded and processing started.", data };
+    return { success: true, message: "PDF indexed and ready.", data };
   } catch (error) {
     return { success: false, message: error?.message || "PDF upload failed." };
   }

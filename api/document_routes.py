@@ -5,9 +5,8 @@ RRF) instead of the legacy FAISS ``document_processor``.  The adapter class
 below provides the thin interface these routes need (list / search / delete)
 while delegating storage and retrieval to the enterprise RAG stack.
 
-Legacy ``document_processor/`` is NOT deleted — ingestion still flows through
-its extraction pipeline — but search, listing and evidence now route through
-the canonical engine so we stop maintaining two retrieval systems.
+Upload and index repair both use insight_rag.ingestion. The legacy processor
+is retained for compatibility but is not invoked by these document routes.
 """
 
 import logging
@@ -64,7 +63,7 @@ class _CanonicalRAGAdapter:
             results = store.search(query, k=k, document_ids=document_ids)
         except Exception as exc:
             logger.warning("Canonical RAG search failed: %s", type(exc).__name__)
-            return []
+            raise HTTPException(status_code=503, detail="Document search is unavailable. Check the RAG index connection and retry.") from exc
         out: list[dict] = []
         for doc, score in results:
             meta = doc.metadata if hasattr(doc, "metadata") else {}
@@ -238,67 +237,13 @@ def retry_document(
     document_id: str,
     user: dict = Depends(require_writable),
 ):
-    """Retry processing a failed document."""
+    """Repair the canonical index from owned saved text; never invoke OCR."""
     document_id = _sanitize_document_id(document_id)
-    processed_dir = PROCESSED_DIR / f"user_{user['user_id']}" / "documents"
-    doc_file = processed_dir / f"{document_id}.json"
-    
-    if not doc_file.exists():
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    import json
-    doc_data = json.loads(doc_file.read_text())
-    
-    if doc_data.get("user_id") != user["user_id"]:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    if doc_data.get("status") not in ("failed", "partial"):
-        raise HTTPException(status_code=400, detail="Document is not in a failed state")
-    
-    # Get the original file via the exact stored path (no glob on
-    # user-controlled original_name).
-    upload_dir = DATA_DIR / "uploads" / f"user_{user['user_id']}"
-    file_path = None
+    from insight_rag.ingestion import PDFIngestion
     try:
-        resolved_upload = upload_dir.resolve()
-        stored = doc_data.get("file_path")
-        if stored:
-            candidate = Path(stored)
-            if not candidate.is_absolute():
-                candidate = resolved_upload / Path(stored).name
-            candidate = candidate.resolve()
-            if candidate.parent == resolved_upload and candidate.suffix.lower() == ".pdf" and candidate.exists():
-                file_path = candidate
-    except Exception:
-        file_path = None
-    
-    if not file_path or not file_path.exists():
-        raise HTTPException(status_code=404, detail="Original file not found for retry")
-    
-    # Get session for LLM provider
-    session = get_session(user["user_id"])
-    llm = session.get("provider")
-    
-    # Create processor and reprocess (legacy extraction pipeline — the only
-    # consumer that still needs the FAISS document_processor for re-indexing).
-    from document_processor import create_document_processor
-    processor = create_document_processor(
-        upload_dir=upload_dir,
-        processed_dir=processed_dir,
-        llm_provider=llm,
-    )
-    
-    result = processor.process_document(
-        file_path=file_path,
-        document_id=document_id,
-        user_id=user["user_id"],
-        original_name=doc_data.get("original_name"),
-    )
-    
-    if not result.success:
-        raise HTTPException(status_code=500, detail=result.error or "Retry failed")
-    
-    return {
-        "ok": True,
-        "document": result.document.to_dict() if hasattr(result.document, 'to_dict') else result.document.__dict__,
-    }
+        return PDFIngestion(user["user_id"]).reindex(document_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Document index repair failed")
+        raise HTTPException(status_code=503, detail="Document index repair failed. Check the RAG database and retry.") from exc

@@ -161,7 +161,8 @@ class SemanticRouter:
 
     def __init__(self, llm):
         self.llm = llm
-        self.llm.models["rag_scope"] = RAG_LLM_MODEL
+        from .providers import configure_rag_models
+        configure_rag_models(self.llm)
 
     @staticmethod
     def _document_manifest(

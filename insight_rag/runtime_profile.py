@@ -50,7 +50,7 @@ def build_runtime_profile(insight_agent) -> RuntimeProfile:
         agent_class=agent_class,
         agent_version=str(version) if version is not None else None,
         llm_provider=provider,
-        rag_model=RAG_LLM_MODEL,
+        rag_model=llm.models.get("rag"),
         embedding_model=EMBEDDING_MODEL,
         vector_store="PostgreSQL + pgvector through LangChain PGVector",
         retrieval_strategy="hybrid dense + lexical retrieval with reciprocal-rank fusion and adaptive evidence selection",

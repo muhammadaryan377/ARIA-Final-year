@@ -37,62 +37,11 @@ class PDFChatRequest(BaseModel):
 
 
 def _capability(user_id: str | int) -> InsightPDFRAG:
-    """Attach PDF-RAG to the session's selected provider (Cloud = user's Groq key, Local = Ollama fine-tunes).
-
-    Falls back to DeepSeek only when the session has no usable provider.
-    RAG chat roles (rag/rag_rewrite/...) are mapped onto the active
-    provider's own models so Cloud/Local never receive another
-    provider's model names.
-    """
-    from core.config import get_session, resolve_provider_key
-    _session = get_session(int(user_id))
-    _pname = (_session.get("provider_name") or "local")
-    if _pname == "local" and not _session.get("provider_name"):
-        logging.getLogger("aria.insight_rag").warning(
-            "provider_name missing from session – falling back to local"
-        )
-    if _pname not in ("local", "cloud", "deepseek", "omniroute", "grok"):
-        raise HTTPException(status_code=503, detail="Selected AI provider is not supported.")
-    if _pname == "deepseek":
-        provider = create_provider(
-            "deepseek",
-            api_key=resolve_provider_key("deepseek", _session.get("api_keys") or {}),
-            models={
-                "rag": RAG_LLM_MODEL,
-                "rag_scope": RAG_LLM_MODEL,
-                "rag_rewrite": RAG_LLM_MODEL,
-                "rag_verify": RAG_LLM_MODEL,
-                "rag_plan": RAG_LLM_MODEL,
-            },
-        )
-    elif _pname == "local":
-        from llm_provider import PROVIDERS as _PROVIDERS
-        _chat_model = (_PROVIDERS["local"]["models"].get("semi")
-                       or _PROVIDERS["local"]["models"].get("suggest")
-                       or "aria-goal")
-        provider = create_provider("local")
-        provider.models.update({
-            "rag": _chat_model,
-            "rag_scope": _chat_model,
-            "rag_rewrite": _chat_model,
-            "rag_verify": _chat_model,
-            "rag_plan": _chat_model,
-        })
-    else:
-        from llm_provider import PROVIDERS as _PROVIDERS
-        _key = resolve_provider_key(_pname, (_session.get("api_keys") or {}))
-        provider = create_provider(_pname, api_key=_key)
-        _fallback = provider.model_for("sql") or provider.model_for("story")
-        if _fallback:
-            provider.models.update({
-                "rag": _fallback,
-                "rag_scope": _fallback,
-                "rag_rewrite": _fallback,
-                "rag_verify": _fallback,
-                "rag_plan": _fallback,
-            })
-    insight_agent = InsightAgent(provider=provider)
-    return InsightPDFRAG(insight_agent=insight_agent, user_id=user_id)
+    """Use the user's saved provider and model without cross-provider overrides."""
+    from core.config import get_session
+    from insight_rag.providers import provider_for_session
+    provider = provider_for_session(get_session(int(user_id)))
+    return InsightPDFRAG(insight_agent=InsightAgent(provider=provider), user_id=user_id)
 
 
 @router.get("/health")
@@ -160,16 +109,15 @@ def upload_pdf(
                     )
                 temp.write(chunk)
 
-        return _capability(user["user_id"]).ingest_pdf(
+        from insight_rag.ingestion import PDFIngestion
+        return PDFIngestion(user["user_id"]).ingest_pdf(
             temp_path,
             original_filename=filename,
         )
     except HTTPException:
         raise
-    except HTTPException:
-        raise
-    except ValueError:
-        raise HTTPException(status_code=400, detail="PDF chat request or provider settings are invalid.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError:
         raise HTTPException(status_code=503, detail="PDF assistant is unavailable. Check its provider and storage settings.")
     except Exception:
@@ -228,8 +176,8 @@ def chat_with_pdfs(request: PDFChatRequest, user: dict = Depends(require_writabl
         )
     except HTTPException:
         raise
-    except ValueError:
-        raise HTTPException(status_code=400, detail="PDF chat request or provider settings are invalid.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError:
         raise HTTPException(status_code=503, detail="PDF assistant is unavailable. Check its provider and storage settings.")
     except Exception:

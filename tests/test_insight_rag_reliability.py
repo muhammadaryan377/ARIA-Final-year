@@ -308,8 +308,8 @@ def test_failed_ingestion_rolls_back_vector_and_local_artifacts(make_rag, tmp_pa
     def extract(path, *, document_id, filename):
         doc = document(did=document_id)
         return [doc], dict(pages=1, tables=0, text_chunks=1, table_chunks=0, total_chunks=1)
-    monkeypatch.setattr("insight_rag.service.extract_pdf_documents", extract)
-    monkeypatch.setattr("insight_rag.service.UserPGVectorStore", lambda *a: SimpleNamespace(
+    monkeypatch.setattr("insight_rag.ingestion.extract_pdf_documents", extract)
+    monkeypatch.setattr("insight_rag.ingestion.UserPGVectorStore", lambda *a: SimpleNamespace(
         add_documents=lambda docs: None, delete_chunks=lambda ids: deleted.extend(ids)))
     monkeypatch.setattr(rag.metadata, "save_chunks", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(OSError):
@@ -418,3 +418,30 @@ def test_multiquery_fusion_promotes_shared_hit_without_duplicates():
     a, b, c = [document(cid=key) for key in ["a", "b", "c"]]
     ranked = fuse_ranked_lists([[a, b, b], [c, b]])
     assert ranked[0] is b and len(ranked) == 3
+
+
+def test_reindex_legacy_chunks_writes_canonical_index(make_rag, monkeypatch):
+    from insight_rag.ingestion import PDFIngestion
+    rag = make_rag()
+    written = []
+    monkeypatch.setattr('insight_rag.ingestion.UserPGVectorStore', lambda *a: SimpleNamespace(
+        add_documents=lambda docs: written.extend(docs)))
+    ingest = PDFIngestion.__new__(PDFIngestion)
+    ingest.user_id, ingest.metadata = rag.user_id, rag.metadata
+    result = ingest.reindex(DID)
+    assert written and all(d.metadata['document_id'] == DID for d in written)
+    assert result['document']['status'] == 'ready'
+    assert result['document']['chunk_ids'] == [d.metadata['chunk_id'] for d in written]
+
+
+def test_reindex_failure_is_not_reported_ready(make_rag, monkeypatch):
+    from insight_rag.ingestion import PDFIngestion
+    rag = make_rag()
+    def fail(docs):
+        raise RuntimeError('database offline')
+    monkeypatch.setattr('insight_rag.ingestion.UserPGVectorStore', lambda *a: SimpleNamespace(add_documents=fail))
+    ingest = PDFIngestion.__new__(PDFIngestion)
+    ingest.user_id, ingest.metadata = rag.user_id, rag.metadata
+    with pytest.raises(RuntimeError):
+        ingest.reindex(DID)
+    assert rag.metadata.get_document(DID)['status'] == 'failed'
