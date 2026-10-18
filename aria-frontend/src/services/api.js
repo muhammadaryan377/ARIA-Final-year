@@ -766,7 +766,9 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
   // Conversational turns (greetings/thanks/bye/help/empty) are NOT errors:
   // they carry a warm message + starter suggestions with empty data and
   // must flow to the UI like clarification (never throw).
-  const failed =
+  const preservedCsv = status === "partial" && data?.analysis_source === "csv_llm"
+    && data?.execution?.success === true && data?.narrative_status === "unavailable";
+  const failed = !preservedCsv &&
     status !== "success" && status !== "clarification" && status !== "conversation";
 
   if (failed) {
@@ -782,6 +784,7 @@ export const analyzeQuestion = async (question, llmMode, sourceContext = {}, mul
       : [];
 
   const goalData = {
+    narrative_status: data?.narrative_status || null,
     resolved_question: data?.resolved_question || null,
     context_resolution: data?.context_resolution || null,
     analysis_results: Array.isArray(data?.analysis_results) ? data.analysis_results : [],

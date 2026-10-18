@@ -1709,6 +1709,7 @@ export default function Dashboard({ setPage, onAsk, user, connectionStatus = "no
         </section>
 
         {/* ---- Executive summary strip ---- */}
+        {(config as any)?.narrative_status === "unavailable" && <p role="status" className="text-sm text-amber-700">Calculation available · AI explanation unavailable. Review the metrics and calculation details below.</p>}
         {summary.description && (
           <section aria-label="Executive summary">
             <div className="flex items-center gap-3 bg-card border border-border rounded-2xl px-4 py-3 text-[13px] text-muted-foreground leading-relaxed shadow-sm min-w-0">

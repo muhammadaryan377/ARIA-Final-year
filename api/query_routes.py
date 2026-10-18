@@ -569,7 +569,7 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
         result["conversation_id"] = conv_id
         result["turn_number"] = len(history) + 1
         session["conversation_id"] = conv_id
-        if result["status"] == "success":
+        if result["status"] in ("success", "partial"):
             history.append(conversation_turn(req.goal, result))
             session["conversation_history"] = history[-10:]
             path = Path(session["processed_path"])

@@ -180,3 +180,18 @@ locally. Reuploading or changing the file identity intentionally starts fresh
 context. After session expiry, reconnect the same retained source before restore.
 
 See CSV_MORNING_TEST.md for exact validation commands and expected fixture results.
+
+
+### Narration failure isolation
+
+Narration accepts typed text/cell segments as well as legacy evidence-reference strings.
+Numbers and percentage formatting are rendered from executed cells, never invented by
+the UI. Planning, read-only execution, integrity, model review and reproducibility
+still must pass before results are exposed. If only narration fails after bounded
+repair (or its provider call fails), the response has status `partial` and
+`narrative_status=unavailable`: reviewed tables are retained, rejected prose and
+follow-ups are omitted, and the UI shows an explicit explanation-unavailable notice.
+This is not a fallback analytical answer or independent verification. Partial
+dashboards are not cached as completed dashboards. Partial chats retain their
+executed evidence for follow-ups and restore. Live evaluation does not count a
+partial answer as a fully passed case.

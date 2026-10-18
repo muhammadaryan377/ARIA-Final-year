@@ -271,6 +271,32 @@ def _narrate(run, plan, question="", context=None):
         and not isinstance(cell['value'], bool) and math.isfinite(cell['value'] * 100)
     ]
     def render(text, numeric_claims=True, field="answer"):
+        # Typed segments separate prose from values; values always come from SQL.
+        if isinstance(text, list):
+            if not 1 <= len(text) <= 80:
+                raise ValueError("Narrative segments must contain one to eighty items")
+            parts = []
+            for segment in text:
+                if not isinstance(segment, dict):
+                    raise ValueError("Each narrative segment must be an object")
+                if set(segment) == {"text"}:
+                    value = segment['text']
+                    if not isinstance(value, str) or not value or len(value) > 2000:
+                        raise ValueError("Invalid narrative text segment")
+                    if re.search(r"\d|[{}]", value):
+                        raise ValueError("Text segments cannot contain numeric claims or reference syntax; use a cell segment")
+                    parts.append(value)
+                elif set(segment) <= {"cell", "format"} and 'cell' in segment:
+                    cell = segment['cell']
+                    if not isinstance(cell, str) or not re.fullmatch(r"\d+:\d+:[^{}|]+", cell):
+                        raise ValueError("Cell segment must identify query:row:column")
+                    fmt = segment.get('format', 'number')
+                    if fmt not in ('number', 'percent'):
+                        raise ValueError("Cell format must be number or percent")
+                    parts.append('{{' + cell + ('|percent' if fmt == 'percent' else '') + '}}')
+                else:
+                    raise ValueError("Use either a text segment or a cell/format segment")
+            text = ''.join(parts)
         text = _text(text, 2000)
         if numeric_claims and re.search(r"\d", REF.sub("", text)):
             literals = re.findall(r"\d+(?:[.,]\d+)*", REF.sub("", text))[:5]
@@ -297,13 +323,39 @@ def _narrate(run, plan, question="", context=None):
     def validate(obj):
         if not isinstance(obj, dict):
             raise ValueError("Expected explanation object")
-        if any(q["data"] for q in queries) and not REF.search(str(obj.get("answer", "")) + str(obj.get("findings", []))):
+        if not isinstance(obj.get('findings', []), list):
+            raise ValueError('Findings must be an array')
+        has_reference = REF.search(str(obj.get("answer", "")) + str(obj.get("findings", [])))
+        def has_cell(parts):
+            return isinstance(parts, list) and any(isinstance(p, dict) and 'cell' in p for p in parts)
+        has_reference = has_reference or has_cell(obj.get('answer')) or any(has_cell(f) for f in obj.get('findings', []) if isinstance(obj.get('findings', []), list))
+        if any(q["data"] for q in queries) and not has_reference:
             raise ValueError("Answer or findings must use exact evidence_cells reference strings")
         answer = render(obj.get("answer"))
-        findings = [render(f, field="findings") for f in _strings(obj.get("findings", []), 8)][:4]
+        finding_parts = obj.get('findings', [])
+        if not isinstance(finding_parts, list) or len(finding_parts) > 8:
+            raise ValueError("Findings must be an array with at most eight items")
+        findings = [render(f, field="findings") for f in finding_parts][:4]
         followups = [render(f, numeric_claims=False) for f in _strings(obj.get("followups", []), 4)]
         return {"answer": answer, "findings": findings, "followups": followups}
     return run.json_call("explanation", "story", NARRATE_PROMPT, {"question": question, "dataset_context": context or {}, "understanding": plan.get("understanding", {}), "executed_queries": queries, "evidence_cells": cells, "percent_cells": percent_cells}, validate)
+
+
+def _narrate_or_preserve(run, plan, question, context):
+    """Only narration can degrade; planning/review/execution still fail closed."""
+    try:
+        narrative = _narrate(run, plan, question, context)
+        run.trace['narrative_status'] = 'complete'
+        return narrative
+    except CsvAnalysisError:
+        # Do not publish a rejected candidate, invent prose, or rerun valid SQL.
+        run.trace['narrative_status'] = 'unavailable'
+        run.trace['results_preserved'] = True
+        log.warning('csv_narrative unavailable request=%s; retaining reviewed result tables', run.trace.get('request_id'))
+        return {'status': 'partial', 'narrative_status': 'unavailable',
+                'answer': 'The calculation completed, but the AI explanation could not be validated. Review the result tables and calculation details below.',
+                'findings': [], 'followups': [],
+                'warnings': ['AI explanation unavailable; no rejected narrative was displayed. Results passed execution checks and model review, not independent semantic verification.']}
 
 
 def _verdict():
@@ -374,7 +426,7 @@ def dashboard(session, user_id):
     plan = investigate(run, plan, lambda previous: _plan(run, session, context, "Build a useful overview of this CSV using its actual schema.", dashboard=True, previous=previous))
     plan = _review_and_repair(run, session, context, "Build a useful overview of this CSV using its actual schema.", plan, dashboard=True)
     session["csv_dataset_understanding"] = plan.get("understanding", {})
-    narrative = _narrate(run, plan, "Summarize the dataset", context)
+    narrative = _narrate_or_preserve(run, plan, "Summarize the dataset", context)
     metrics, charts, discoveries = [], [], []
     for i, q in enumerate(plan["queries"]):
         if q.get("statistical_evidence"):
@@ -393,7 +445,7 @@ def dashboard(session, user_id):
                            "data": q["data"], "xKey": q["dimensions"][0], "dataKey": q["measures"][0],
                            "measure": q["measures"][0], "dimension": q["dimensions"][0], "format": "number",
                            "sql": q["sql"], "description": q["reason"]})
-    config = {"summary": {"title": "CSV analysis", "description": narrative["answer"],
+    config = {"result_status": narrative.get("status", "success"), "narrative_status": narrative.get("narrative_status", "complete"), "warnings": narrative.get("warnings", []), "summary": {"title": "CSV analysis", "description": narrative["answer"],
                           "tableCount": 1, "totalRows": context["row_count"], "database": context["table"]},
               "statistical_insights": discoveries, "metrics": metrics, "visualizations": charts, "sections": [], "anomalies": [],
               "insights": [{"id": f"llm_insight_{i}", "title": f, "description": f, "type": "observation"}
@@ -404,7 +456,8 @@ def dashboard(session, user_id):
               "validation": plan.get("validation"), "verdict": _verdict(), "llm_trace": run.trace}
     session["csv_llm_suggestions"] = {"key": copy.deepcopy(_suggestion_key(session)), "questions": narrative["followups"]}
     run.trace["sql_execution_count"] = run.query_count
-    session["csv_llm_dashboard"] = {"key": key, "config": copy.deepcopy(config)}
+    if narrative.get("status") != "partial":
+        session["csv_llm_dashboard"] = {"key": key, "config": copy.deepcopy(config)}
     return config
 
 
@@ -427,7 +480,7 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
                 "llm_trace": run.trace, "suggested_questions": [], "user_goal": question}
     plan = investigate(run, plan, lambda previous: _plan(run, session, context, resolved_question, [], request_context=request_context, previous=previous))
     plan = _review_and_repair(run, session, context, resolved_question, plan, request_context=request_context)
-    narrative = _narrate(run, plan, resolved_question, context)
+    narrative = _narrate_or_preserve(run, plan, resolved_question, context)
     if not session.get("csv_dataset_understanding"):
         session["csv_dataset_understanding"] = plan.get("understanding", {})
     results = [{**item, "row_count": len(item["data"]), "chart_spec": {
@@ -448,8 +501,8 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
              "y": q["measures"][0] if len(q["measures"]) == 1 else None, "results": q["data"], "data": q["data"]}
     evidence = {"tables": [context["table"]], "columns": q["columns"], "sql": q["sql"],
                 "row_count": len(q["data"]), "values": q["data"]}
-    return {"ok": True, "provider": session.get("provider_name"), "status": "success", "result_status": "success",
-            "user_goal": question, "resolved_question": resolved_question, "context_resolution": resolution, "message": narrative["answer"], "answer": narrative["answer"],
+    return {"ok": True, "provider": session.get("provider_name"), "status": narrative.get("status", "success"), "result_status": narrative.get("status", "success"),
+            "narrative_status": narrative.get("narrative_status", "complete"), "user_goal": question, "resolved_question": resolved_question, "context_resolution": resolution, "message": narrative["answer"], "answer": narrative["answer"],
             "story": narrative["answer"], "findings": narrative["findings"], "data": q["data"],
             "columns": q["columns"], "row_count": len(q["data"]), "sql_used": q["sql"],
             "analysis_plan": plan, "ranked_insights": rank_findings(plan["queries"]), "analysis_results": results, "dataset_profile": context,
@@ -464,7 +517,7 @@ def ask_csv(session, user_id, question, history=None, request_context=None):
             "why": {"what_happened": narrative["answer"], "evidence": all_evidence, "comparisons": [],
                     "limitations": limitations},
             "result_valid": True, "confidence": "unverified", "validation": plan.get("validation"), "verdict": _verdict(),
-            "warnings": context["profile"]["issues"], "limitations": limitations,
+            "warnings": context["profile"]["issues"] + narrative.get("warnings", []), "limitations": limitations + narrative.get("warnings", []),
             "llm_trace": run.trace, "timestamp": datetime.now(timezone.utc).isoformat(), "analysis_source": "csv_llm"}
 
 

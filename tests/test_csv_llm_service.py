@@ -117,14 +117,19 @@ class CsvLlmTests(unittest.TestCase):
     def test_narration_rejects_invented_numeric_claims(self):
         bad = {'answer':'Revenue is 9000.', 'findings':[], 'followups':[]}
         self.provider(PLAN, bad, bad)
-        with self.assertRaises(CsvAnalysisError):
-            ask_csv(self.session, 7, 'Totals?')
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['status'], 'partial')
+        self.assertNotIn('9000', result['answer'])
+        self.assertEqual(result['data'][0]['total_revenue'], 500)
+        self.assertEqual(result['findings'], [])
 
     def test_invalid_cell_reference_rejected(self):
         bad = {'answer':'Profit is {{0:5:profit}}.', 'findings':[], 'followups':[]}
         self.provider(PLAN, bad, bad)
-        with self.assertRaises(CsvAnalysisError):
-            ask_csv(self.session, 7, 'Totals?')
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['narrative_status'], 'unavailable')
+        self.assertNotIn('{{', result['answer'])
+        self.assertEqual(result['data'][0]['total_profit'], 150)
 
     def test_sql_sandbox(self):
         ctx = _context(self.session)
@@ -360,6 +365,38 @@ class CsvLlmTests(unittest.TestCase):
         self.provider(PLAN, STORY)
         result = dashboard(self.session, 7)
         self.assertEqual([m['rawValue'] for m in result['metrics']], [500, 150])
+
+    def test_structured_narrative_segments(self):
+        story = {'answer': [{'text': 'Revenue '}, {'cell': '0:0:total_revenue'}, {'text': ', profit '}, {'cell': '0:0:total_profit'}],
+                 'findings': [[{'text': 'Profit is '}, {'cell': '0:0:total_profit'}]], 'followups': []}
+        self.provider(PLAN, story)
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['answer'], 'Revenue 500, profit 150')
+        self.assertEqual(result['findings'], ['Profit is 150'])
+
+    def test_structured_segment_cannot_smuggle_number(self):
+        story = {'answer': [{'text': 'Revenue 9999 '}, {'cell': '0:0:total_revenue'}], 'findings': [], 'followups': []}
+        self.provider(PLAN, story, story)
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['status'], 'partial')
+        self.assertNotIn('9999', result['answer'])
+
+    def test_dashboard_preserves_data_after_narration_failure_without_caching(self):
+        bad = {'answer': 'Revenue 9000', 'findings': [], 'followups': []}
+        self.provider(PLAN, bad, bad)
+        result = dashboard(self.session, 7)
+        self.assertEqual(result['result_status'], 'partial')
+        self.assertEqual([m['rawValue'] for m in result['metrics']], [500, 150])
+        self.assertNotIn('csv_llm_dashboard', self.session)
+        self.assertFalse(result['llm_trace']['fallback_used'])
+        self.assertTrue(result['llm_trace']['results_preserved'])
+
+    def test_narration_provider_outage_preserves_reviewed_results(self):
+        self.provider(PLAN, RuntimeError('network unavailable'))
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['data'][0]['total_profit'], 150)
 
     def test_ratio_percentage_rendered_from_evidence(self):
         plan = {'status': 'ready', 'queries': [query('SELECT SUM(profit)*1.0/NULLIF(SUM(revenue),0) AS margin FROM facts', ['margin'])]}
