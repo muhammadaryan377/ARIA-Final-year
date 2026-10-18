@@ -297,13 +297,22 @@ def _verdict():
 def _review_and_repair(run, session, context, question, plan, dashboard=False, request_context=None):
     integrity = validate_evidence(plan)
     review = review_plan(run, plan, question, context)
+    run.trace.setdefault('semantic_reviews', []).append(copy.deepcopy(review))
+    log.info('csv_review request=%s decision=%s reason=%s', run.trace.get('request_id'), review['status'], review['reason'])
     if review['status'] == 'revise':
-        correction = {**(request_context or {}), 'review_correction': review['reason']}
+        rejected = copy.deepcopy(plan)
+        for query in rejected['queries']:
+            query['total_result_rows'] = len(query['data'])
+            query['data'] = query['data'][:8]
+        correction = {**(request_context or {}), 'review_correction': review['reason'],
+                      'rejected_analysis': rejected, 'review_checks': review['checks']}
         plan = _plan(run, session, context, question, [], dashboard=dashboard, request_context=correction)
         if plan['status'] != 'ready':
             raise CsvAnalysisError(plan['clarification'], run.trace)
         integrity = validate_evidence(plan)
         review = review_plan(run, plan, question, context)
+        run.trace['semantic_reviews'].append(copy.deepcopy(review))
+        log.info('csv_review request=%s decision=%s reason=%s', run.trace.get('request_id'), review['status'], review['reason'])
         if review['status'] != 'accepted':
             raise CsvAnalysisError('The analysis did not pass semantic review. ' + review['reason'], run.trace)
         plan['investigation_complete'] = not plan.get('needs_investigation', False)

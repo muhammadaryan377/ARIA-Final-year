@@ -48,10 +48,16 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result['data'][0]['total_profit'],150)
         self.assertEqual(result['llm_trace']['provider_invocation_count'],5)
         calls = self.session['provider'].calls
-        self.assertIn('review_correction', ''.join(m['content'] for m in calls[2][1]))
+        repair_prompt = ''.join(m['content'] for m in calls[2][1])
+        self.assertIn('review_correction', repair_prompt)
+        self.assertIn('rejected_analysis', repair_prompt)
+        self.assertIn('SUM(revenue) AS total_profit', repair_prompt)
+        self.assertEqual([r['status'] for r in result['llm_trace']['semantic_reviews']], ['revise', 'accepted'])
 
     def test_repeated_review_rejection_cannot_return_success(self):
-        with self.assertRaises(CsvAnalysisError): self.ask(PLAN, REVISE, PLAN, REVISE)
+        with self.assertRaises(CsvAnalysisError) as caught: self.ask(PLAN, REVISE, PLAN, REVISE)
+        self.assertEqual([r['status'] for r in caught.exception.trace['semantic_reviews']], ['revise', 'revise'])
+        self.assertIn(REVISE['reason'], str(caught.exception))
         self.assertEqual(len(self.session['provider'].calls),4)
 
     def test_invalid_review_receives_bounded_repair(self):
