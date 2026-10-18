@@ -872,7 +872,7 @@ def get_dashboard_config(request: Request, user: dict = Depends(get_current_user
     import time as _time
 
     session = get_session(user["user_id"])
-    from services.csv_llm_service import is_csv_session, dashboard, CsvAnalysisError
+    from csv_engine.analyst import is_csv_session, dashboard, CsvAnalysisError
     if is_csv_session(session):
         from core.config import save_session
         try:

@@ -350,7 +350,7 @@ def get_suggestions(request: Request, payload: dict | None = None, user: dict = 
         limit = 8
     # Cap to the 4-8 window.
     limit = max(4, min(8, limit))
-    from services.csv_llm_service import is_csv_session, suggestions_csv, CsvAnalysisError
+    from csv_engine.analyst import is_csv_session, suggestions_csv, CsvAnalysisError
     if is_csv_session(session):
         try:
             result = suggestions_csv(session, user["user_id"], limit)
@@ -539,7 +539,7 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
     """
     session = get_session(user["user_id"])
     provider = require_data(request)
-    from services.csv_llm_service import is_csv_session, ask_csv, CsvAnalysisError, conversation_turn, _fingerprint
+    from csv_engine.analyst import is_csv_session, ask_csv, CsvAnalysisError, conversation_turn, _fingerprint
     if is_csv_session(session):
         import uuid
         import os

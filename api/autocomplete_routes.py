@@ -628,7 +628,7 @@ def _autocomplete(partial: str, limit: int, user: dict):
 
     session = get_session(user["user_id"])
 
-    from services.csv_llm_service import is_csv_session, cached_suggestions_csv
+    from csv_engine.analyst import is_csv_session, cached_suggestions_csv
     if is_csv_session(session):
         # Typing never triggers model calls or substitutes template metrics.
         questions = cached_suggestions_csv(session)
