@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+from contextlib import closing
 import sqlite3
 import tempfile
 import time
@@ -91,7 +92,7 @@ def main():
                     entry.update(status='not_run', reason='Requires a live model to evaluate clarification')
                 else:
                     path = sessions[case['file']]['db_uri'][len('sqlite:///'):]
-                    with sqlite3.connect(path) as conn:
+                    with closing(sqlite3.connect(path)) as conn, conn:
                         conn.row_factory = sqlite3.Row
                         rows = [dict(r) for r in conn.execute(case['sql'])]
                     entry.update(status='passed' if matches(rows,case['expected']) else 'failed', actual=rows)

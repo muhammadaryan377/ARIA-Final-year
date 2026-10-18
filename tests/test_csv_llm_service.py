@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -53,7 +54,7 @@ class CsvLlmTests(unittest.TestCase):
         self.addCleanup(reviewer.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'test.db'
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('CREATE TABLE facts(city TEXT, quantity INTEGER, unit_price REAL, revenue REAL, profit REAL)')
             conn.executemany('INSERT INTO facts VALUES(?,?,?,?,?)',
                              [('A', 2, 100, 200, 60), ('B', 3, 100, 300, 90)])
@@ -133,11 +134,11 @@ class CsvLlmTests(unittest.TestCase):
                     "ATTACH DATABASE '/tmp/other.db' AS other"]:
             with self.subTest(sql=sql), self.assertRaises((ValueError, sqlite3.Error)):
                 _execute(self.session, ctx, sql)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM facts').fetchone()[0], 2)
 
     def test_result_bound(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [('A',1,1,1,1)] * 201)
         with self.assertRaises(ValueError):
             _execute(self.session, _context(self.session), 'SELECT city FROM facts')
@@ -167,7 +168,7 @@ class CsvLlmTests(unittest.TestCase):
         story = {'answer':'Profit is {{0:0:profit_total}}.', 'findings':[], 'followups':[]}
         p = self.provider(plan, story, plan, story)
         dashboard(self.session, 7)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('INSERT INTO facts VALUES("C",1,1,1,20)')
         result = dashboard(self.session, 7)
         self.assertEqual(len(p.calls), 4)
@@ -266,7 +267,7 @@ class CsvLlmTests(unittest.TestCase):
         self.assertEqual(len(result['analysis_results']), 1)
 
     def test_profile_missing_duplicates_and_no_raw_text_samples(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [('private@example.com', None, 10, 20, None)] * 2)
         ctx = _context(self.session)
         self.assertEqual(ctx['profile']['duplicate_rows'], 1)
@@ -277,13 +278,13 @@ class CsvLlmTests(unittest.TestCase):
     def test_profile_change_clears_old_semantic_context(self):
         _context(self.session)
         self.session['csv_dataset_understanding'] = {'description': 'Old context'}
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('INSERT INTO facts VALUES("C",1,1,1,1)')
         self.assertEqual(_context(self.session)['row_count'], 3)
         self.assertNotIn('csv_dataset_understanding', self.session)
 
     def test_empty_dataset_reports_count_not_invented_totals(self):
-        with sqlite3.connect(self.path) as conn: conn.execute('DELETE FROM facts')
+        with closing(sqlite3.connect(self.path)) as conn, conn: conn.execute('DELETE FROM facts')
         self.provider({'status': 'ready', 'queries': [query('SELECT COUNT(*) AS records FROM facts', ['records'])]},
             {'answer': 'There are {{0:0:records}} records.', 'findings': [], 'followups': []})
         result = ask_csv(self.session, 7, 'Summarize my data')
@@ -291,7 +292,7 @@ class CsvLlmTests(unittest.TestCase):
         self.assertEqual(result['dataset_profile']['row_count'], 0)
 
     def test_dimension_only_dataset(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('CREATE TABLE categories(tag TEXT)')
             conn.executemany('INSERT INTO categories VALUES(?)', [('red',), ('blue',), ('red',)])
         self.session['db_name'] = 'categories'
@@ -306,7 +307,7 @@ class CsvLlmTests(unittest.TestCase):
         self.assertIsNone(ask_csv(self.session, 7, 'Calculate ratio')['data'][0]['ratio'])
 
     def test_date_coverage_can_be_text_scalar_results(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('ALTER TABLE facts ADD COLUMN recorded TEXT')
             conn.execute("UPDATE facts SET recorded='2026-10-17'")
         plan = {'status': 'ready', 'queries': [{'title': 'Coverage', 'reason': 'Observed date coverage',
@@ -392,7 +393,7 @@ class CsvLlmTests(unittest.TestCase):
         req.conversation_id = 'another-chat'
         self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 1)
         req.conversation_id = 'new-conversation'
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('INSERT INTO facts VALUES("C",1,1,1,1)')
         self.assertEqual(route(None, req, {'user_id': 7})['turn_number'], 1)
 

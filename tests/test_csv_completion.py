@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+from contextlib import closing
 import sqlite3
 import tempfile
 import time
@@ -25,7 +26,7 @@ class CompletionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / 'source.db'
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             c.execute('CREATE TABLE facts(city TEXT, revenue REAL, profit REAL)')
             c.executemany('INSERT INTO facts VALUES(?,?,?)', [('A',200,60),('B',300,90)])
         self.session = {'db_uri':'sqlite:///'+str(self.db),'db_name':'facts','provider_name':'cloud'}
@@ -98,7 +99,7 @@ class CompletionTests(unittest.TestCase):
             validate_evidence({'queries':[{'columns':['x'],'data':[{'x':float('nan')}]}]})
 
     def test_reservoir_includes_late_population_and_repeats(self):
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             c.execute('DELETE FROM facts')
             c.executemany('INSERT INTO facts VALUES(?,?,?)', [('A',0,0)]*10000+[('B',100,100)]*10000)
         context = _context(self.session)
@@ -110,7 +111,7 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(first['matched_count'],20000)
 
     def test_sampled_time_analysis_is_not_misrepresented_as_full(self):
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             c.executemany('INSERT INTO facts VALUES(?,?,?)', [('2026-09-01',1,1)]*10001)
         with self.assertRaisesRegex(ValueError,'complete records'):
             run_tool(self.session,_context(self.session), {'tool':'time_changes','arguments':{'columns':['profit'],'date_column':'city','aggregation':'sum'}})

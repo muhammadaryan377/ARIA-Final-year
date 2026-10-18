@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -18,7 +19,7 @@ class ChatStore:
     @contextmanager
     def connection(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path, timeout=10) as conn:
+        with closing(sqlite3.connect(self.path, timeout=10)) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute('''CREATE TABLE IF NOT EXISTS csv_chats (
                 user_id INTEGER NOT NULL, dataset TEXT NOT NULL, conversation_id TEXT NOT NULL,

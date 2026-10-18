@@ -1,6 +1,7 @@
 """Known-pattern tests use real SQLite and real statistical calculations."""
 import json
 import random
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -21,7 +22,7 @@ class StatisticalTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / 'patterns.db'
         self.session = {'db_name': 'facts', 'db_uri': 'sqlite:///' + str(self.path), 'provider_name': 'cloud'}
         rng = random.Random(41)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('CREATE TABLE facts(x REAL, y REAL, value REAL, segment TEXT, day TEXT)')
             conn.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [(i, 2*i+rng.random(), 10 if i<60 else 30,
                 'A' if i<60 else 'B', f'2026-09-{i%30+1:02d}') for i in range(120)])
@@ -49,14 +50,14 @@ class StatisticalTests(unittest.TestCase):
         self.assertEqual(a['group_count'], 60)
 
     def test_planted_outlier_and_source_row(self):
-        with sqlite3.connect(self.path) as c: c.execute('UPDATE facts SET value=10000 WHERE rowid=5')
+        with closing(sqlite3.connect(self.path)) as c, c: c.execute('UPDATE facts SET value=10000 WHERE rowid=5')
         r = self.tool('outliers', columns=['value'], group_by='segment')
         self.assertEqual(r['data'][0]['source_row'], 5)
         self.assertEqual(r['data'][0]['value'], 10000)
         self.assertEqual(r['data'][0]['group_median'], 10)
 
     def test_uploaded_columns_cannot_shadow_internal_row_identity(self):
-        with sqlite3.connect(self.path) as c:
+        with closing(sqlite3.connect(self.path)) as c, c:
             c.execute('ALTER TABLE facts ADD COLUMN rowid TEXT')
             c.execute('ALTER TABLE facts ADD COLUMN __aria_row REAL')
             c.execute('UPDATE facts SET __aria_row=10, rowid="custom"')
@@ -73,7 +74,7 @@ class StatisticalTests(unittest.TestCase):
         self.assertEqual(r['data'], [])
 
     def test_small_sample_and_missing_values(self):
-        with sqlite3.connect(self.path) as c:
+        with closing(sqlite3.connect(self.path)) as c, c:
             c.execute('DELETE FROM facts WHERE rowid>5')
             c.execute('UPDATE facts SET value=NULL WHERE rowid=1')
         r = self.tool('distribution', columns=['value'])
@@ -90,7 +91,7 @@ class StatisticalTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.tool('distribution', columns=['x); DROP TABLE facts; --'])
 
     def test_planted_daily_jump(self):
-        with sqlite3.connect(self.path) as c:
+        with closing(sqlite3.connect(self.path)) as c, c:
             c.execute('DELETE FROM facts')
             c.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [(i,i, 100 if i<15 else 300,'A',f'2026-09-{i+1:02d}') for i in range(30)])
         r = self.tool('time_changes', columns=['value'], date_column='day', aggregation='sum')
@@ -99,7 +100,7 @@ class StatisticalTests(unittest.TestCase):
         self.assertEqual(r['data'][0]['change'],200)
 
     def test_bounded_sample_is_explicit(self):
-        with sqlite3.connect(self.path) as c:
+        with closing(sqlite3.connect(self.path)) as c, c:
             c.executemany('INSERT INTO facts VALUES(?,?,?,?,?)', [(1,2,3,'A','2026-09-01')]*10000)
         r = self.tool('distribution', columns=['value'])
         self.assertTrue(r['sampled'])
