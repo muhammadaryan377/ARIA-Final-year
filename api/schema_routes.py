@@ -26,6 +26,12 @@ def _extract_schema_impl(request: Request, user: dict, db_type: str = "postgresq
     """
     session = get_session(user["user_id"])
     require_data(request)
+    # Session normalization may restore a default schema_path even for PDFs.
+    # Source identity, not presence of that path, decides whether SQL applies.
+    if session.get("source_type") == "document" or session.get("db_type") == "document":
+        return {"ok": True, "applicable": False, "source": "document",
+                "schema": {"tables": {}, "declared_relationships": [], "inferred_relationships": []},
+                "detail": "Document indexing is ready. Use Document Chat for this source."}
 
     if session["source_type"] != "relational":
         _sp = session.get("schema_path")
@@ -36,7 +42,10 @@ def _extract_schema_impl(request: Request, user: dict, db_type: str = "postgresq
                 detail="This source is a text document — use Document Chat "
                        "(Copilot) instead of schema analytics.",
             )
-        mapping = json.loads(Path(_sp).read_text(encoding="utf-8"))
+        try:
+            mapping = json.loads(Path(_sp).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="The connected file schema is missing or unreadable. Reconnect the data file.") from exc
         return {
             "ok": True,
             "provider": session["provider_name"],
@@ -252,6 +261,12 @@ def get_schema(request: Request, user: dict = Depends(get_current_user)):
     """Return the current schema mapping (tables, columns, relationships)."""
     session = get_session(user["user_id"])
     require_data(request)
+    # Session normalization may restore a default schema_path even for PDFs.
+    # Source identity, not presence of that path, decides whether SQL applies.
+    if session.get("source_type") == "document" or session.get("db_type") == "document":
+        return {"ok": True, "applicable": False, "source": "document",
+                "schema": {"tables": {}, "declared_relationships": [], "inferred_relationships": []},
+                "detail": "Document indexing is ready. Use Document Chat for this source."}
     path = session.get("schema_path")
     if not path:
         raise HTTPException(status_code=404, detail="No schema path configured. Connect a database first.")

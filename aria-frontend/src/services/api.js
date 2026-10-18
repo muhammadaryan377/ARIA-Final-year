@@ -591,6 +591,9 @@ export const fetchSchema = async () => {
   // reload unchanged datasets on every call.
   try {
     const cached = await request("/schema");
+    if (cached?.applicable === false && cached?.source === "document") {
+      return { success: true, data: cached.schema || { tables: {} }, applicable: false, source: "document" };
+    }
     const tables = cached?.schema?.tables || cached?.tables || {};
     if (cached?.schema && Object.keys(tables).length > 0) {
       return { success: true, data: cached?.schema || cached || {}, cached: true };
