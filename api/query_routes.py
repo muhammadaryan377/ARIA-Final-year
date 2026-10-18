@@ -539,6 +539,26 @@ def ask(request: Request, req: GoalRequest, user: dict = Depends(require_writabl
     """
     session = get_session(user["user_id"])
     provider = require_data(request)
+    if session.get("source_type") == "document" or session.get("db_type") == "document":
+        from api.insight_rag_routes import _capability
+        from insight_rag.analytics_adapter import analytics_answer
+        document_id = session.get("document_id")
+        if not document_id:
+            raise HTTPException(status_code=400, detail="Select an uploaded document first.")
+        try:
+            result = _capability(user["user_id"]).chat(
+                req.goal,
+                conversation_id=req.conversation_id or session.get("document_conversation_id"),
+                document_ids=[document_id],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            log.exception("Document question failed")
+            raise HTTPException(status_code=503, detail="Document chat could not complete. Check the provider and RAG connection, then retry.") from exc
+        session["document_conversation_id"] = result.get("conversation_id")
+        save_session(user["user_id"], session)
+        return analytics_answer(result, req.goal)
     from csv_engine.analyst import is_csv_session, ask_csv, CsvAnalysisError, conversation_turn, _fingerprint
     if is_csv_session(session):
         import uuid

@@ -121,6 +121,8 @@ def _load_schema_mapping(session: dict) -> dict:
     schema_mapping_*_latest.json by mtime. Never raises; logs chosen file.
     """
     session = session or {}
+    if session.get("source_type") == "document" or session.get("db_type") == "document" or str(session.get("db_uri", "")).startswith("document://"):
+        return {}
     sp = session.get("schema_path")
     if sp:
         try:
@@ -940,6 +942,8 @@ def run_explore(session: dict, request: dict) -> dict:
     Accepts both legacy keys (time/compare) and frontend keys
     (time_grain/comparison/secondary_breakdown/date_range string).
     """
+    if session.get("source_type") == "document" or session.get("db_type") == "document" or str(session.get("db_uri", "")).startswith("document://"):
+        return {"ok": False, "reason": "document_source", "message": "Ask a question about your PDF in Document Chat. SQL Explore requires a CSV or database.", "data": [], "columns": []}
     roles_pre = _classify_columns(_load_schema_mapping(session)) if request.get("metric") else {}
     metric_col = _resolve_column(roles_pre, request.get("metric")) or request.get("metric")
     breakdown_col = _resolve_column(roles_pre, request.get("breakdown")) or request.get("breakdown")
