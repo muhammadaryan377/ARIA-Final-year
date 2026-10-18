@@ -711,7 +711,11 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                         answer = repaired
             evidence_status = "supported" if verification == "verified" else verification
             if verification != "verified":
-                answer, sources = REFUSAL, []
+                answer, sources = (
+                    "The verification service is temporarily unavailable. Please retry this question; "
+                    "this does not mean the PDF lacks the information."
+                    if verification == "verification_unavailable" else REFUSAL
+                ), []
         except Exception:
             answer = (
                 "I found relevant PDF evidence, but I'm having trouble reaching the language model right now. "

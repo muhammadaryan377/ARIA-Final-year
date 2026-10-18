@@ -319,6 +319,21 @@ def _minimize_for_cloud(messages, max_chars: int = 4000):
             out.append(m)
     return out
 
+
+def _prepare_role_messages(role, messages):
+    """Preserve bounded RAG evidence and trailing questions across provider I/O.
+
+    RAG builds its own context budget. The generic 4k minimizer must not cut
+    evidence, JSON schemas, candidate answers, or the latest question silently.
+    Secret redaction still applies; oversized RAG payloads fail explicitly.
+    """
+    if role not in {"rag", "rag_scope", "rag_verify", "rag_rewrite", "rag_plan"}:
+        return _minimize_for_cloud(messages)
+    limit = 64000
+    if _content_chars(messages) > limit:
+        raise ValueError("Document request exceeds the 64000-character provider context budget; narrow the document scope.")
+    return _minimize_for_cloud(messages, max_chars=limit)
+
 # ---------------------------------------------------------------------------
 # Provider metadata
 # ---------------------------------------------------------------------------
@@ -545,7 +560,7 @@ class LLMProvider:
             *messages,
         ]
         extra_body = self._thinking_body(role)
-        structured_messages = _minimize_for_cloud(structured_messages)
+        structured_messages = _prepare_role_messages(role, structured_messages)
         try:
             def _request():
                 kwargs = {
@@ -600,7 +615,7 @@ class LLMProvider:
         if self.provider == "local" and _content_chars(messages) > _LLM_LOCAL_MINIMIZE_THRESHOLD:
             # Same data-minimization as the cloud path (4000 chars/msg) when
             # local context exceeds 24k chars: bounds memory/time on CPU.
-            messages = _minimize_for_cloud(messages)
+            messages = _prepare_role_messages(role, messages)
         model = self.model_for(role)
         if not model:
             raise ValueError(f"No model configured for role '{role}'")
@@ -718,7 +733,7 @@ class LLMProvider:
 
     def _chat_cloud(self, role, model, messages, temperature, num_predict, timeout):
         _require_cloud_consent(self.provider)
-        messages = _minimize_for_cloud(messages)
+        messages = _prepare_role_messages(role, messages)
         extra_body = self._thinking_body(role)
         def _request():
             kwargs = {

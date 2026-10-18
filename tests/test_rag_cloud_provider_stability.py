@@ -143,3 +143,55 @@ def test_cloud_retry_does_not_retry_non_429(monkeypatch):
     with pytest.raises(BadRequest):
         provider._cloud_with_retry(lambda: (_ for _ in ()).throw(BadRequest("bad request")))
     assert waits == []
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_document_provider_preserves_late_evidence_question_and_candidate(monkeypatch, structured):
+    monkeypatch.setenv("ARIA_CLOUD_CONSENT", "1")
+    captured = []
+    def create(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"verdict":"SUPPORTED"}'))])
+    provider = LLMProvider.__new__(LLMProvider)
+    provider.provider = "deepseek"
+    provider.models = {"rag": "test", "rag_verify": "test"}
+    provider._cloud_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    provider._thinking_body = lambda role: {}
+    body = "Earlier evidence. " * 400 + "\nLater evidence: populations differ.\nQuestion: Can these totals be divided?\nCandidate: No."
+    messages = [{"role": "user", "content": body}]
+    if structured:
+        provider.chat_structured("rag_verify", messages, json_schema={"type":"object", "properties":{}})
+    else:
+        provider._chat_cloud("rag", "test", messages, 0, 100, 12)
+    assert captured[0]["messages"][-1]["content"] == body
+
+
+def test_document_payload_limit_fails_explicitly_and_still_redacts():
+    from llm_provider import _prepare_role_messages
+    with pytest.raises(ValueError, match="context budget"):
+        _prepare_role_messages("rag", [{"role":"user", "content":"x" * 64001}])
+    result = _prepare_role_messages("rag", [{"role":"user", "content":"gsk_1234567890123456"}])
+    assert "gsk_1234567890123456" not in result[0]["content"]
+
+
+def test_plain_verifier_fallback_explicitly_requests_binary_output():
+    from insight_rag.grounding import _binary_verdict, _circuit_note_success
+    _circuit_note_success()
+    class PlainModel:
+        def chat(self, role, messages, **kw):
+            assert "Return exactly SUPPORTED or UNSUPPORTED" in messages[-1]["content"]
+            return "SUPPORTED"
+    assert _binary_verdict(PlainModel(), role="rag_verify", messages=[]) == "SUPPORTED"
+
+
+def test_request_budget_exhaustion_does_not_open_provider_circuit():
+    from insight_rag.grounding import _binary_verdict, _CIRCUIT_FAILURES, _circuit_note_success
+    from llm_provider import RagLLMBudgetExceeded
+    _circuit_note_success()
+    class Exhausted:
+        def chat_structured(self, *a, **kw):
+            raise RagLLMBudgetExceeded("request budget")
+        def chat(self, *a, **kw):
+            pytest.fail("Do not retry an exhausted request")
+    assert _binary_verdict(Exhausted(), role="rag_verify", messages=[]) is None
+    assert not _CIRCUIT_FAILURES

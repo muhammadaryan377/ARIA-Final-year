@@ -11,6 +11,7 @@ model, or a calibrated truth probability. Use
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 
@@ -175,19 +176,29 @@ def _binary_verdict(llm, *, role: str, messages: list[dict], timeout: int = 12) 
             if verdict in {"SUPPORTED", "UNSUPPORTED"}:
                 _circuit_note_success()
                 return verdict
-        except Exception:
-            pass
+        except Exception as exc:
+            from .diagnostics import record
+            record("verify_structured_error", type(exc).__name__)
+            logging.getLogger(__name__).warning("RAG verifier structured request failed: %s", type(exc).__name__)
+            # Exhaustion is request-local, not a provider outage. Do not poison
+            # the process-wide circuit or spend another call on this request.
+            if type(exc).__name__ == "RagLLMBudgetExceeded":
+                return None
 
     try:
         raw = llm.chat(
             role,
-            messages,
+            [*messages, {"role": "user", "content": "Return exactly SUPPORTED or UNSUPPORTED, with no explanation."}],
             temperature=0.0,
             num_predict=20,
             timeout=timeout,
         )
-    except Exception:
-        _circuit_note_failure()
+    except Exception as exc:
+        from .diagnostics import record
+        record("verify_plain_error", type(exc).__name__)
+        logging.getLogger(__name__).warning("RAG verifier fallback failed: %s", type(exc).__name__)
+        if type(exc).__name__ != "RagLLMBudgetExceeded":
+            _circuit_note_failure()
         return None
     verdict = _normalise_verdict_text(raw)
     if verdict is None:
