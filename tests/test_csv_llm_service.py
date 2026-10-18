@@ -361,6 +361,22 @@ class CsvLlmTests(unittest.TestCase):
         result = dashboard(self.session, 7)
         self.assertEqual([m['rawValue'] for m in result['metrics']], [500, 150])
 
+    def test_ratio_percentage_rendered_from_evidence(self):
+        plan = {'status': 'ready', 'queries': [query('SELECT SUM(profit)*1.0/NULLIF(SUM(revenue),0) AS margin FROM facts', ['margin'])]}
+        self.provider(plan, {'answer': 'Profit margin is {{0:0:margin|percent}}.', 'findings': [], 'followups': []})
+        result = ask_csv(self.session, 7, 'Profit margin?')
+        self.assertEqual(result['answer'], 'Profit margin is 30.00%.')
+        self.assertAlmostEqual(result['data'][0]['margin'], 0.3)
+
+    def test_literal_percentage_repair_uses_verified_reference(self):
+        plan = {'status': 'ready', 'queries': [query('SELECT SUM(profit)*1.0/NULLIF(SUM(revenue),0) AS margin FROM facts', ['margin'])]}
+        bad = {'answer': 'Margin {{0:0:margin}} equals 30%.', 'findings': [], 'followups': []}
+        good = dict(bad, answer='Margin is {{0:0:margin|percent}}.')
+        p = self.provider(plan, bad, good)
+        result = ask_csv(self.session, 7, 'Profit margin?')
+        self.assertEqual(result['answer'], 'Margin is 30.00%.')
+        self.assertIn('literal numbers', str(p.calls[-1]))
+
     def test_followup_cell_references_are_rendered(self):
         story = dict(STORY, followups=['Compare the top 3 cities against {{0:0:total_profit}} total profit.'])
         self.provider(PLAN, story)

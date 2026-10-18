@@ -263,17 +263,35 @@ def _narrate(run, plan, question="", context=None):
     cells = [{"reference": "{{" + str(qi) + ":" + str(ri) + ":" + col + "}}", "value": value}
              for qi, q in enumerate(queries) for ri, row in enumerate(q["data"][:12])
              for col, value in row.items()]
-    def render(text, numeric_claims=True):
+    percent_cells = [
+        {"reference": cell["reference"][:-2] + "|percent}}",
+         "display": f"{cell['value'] * 100:,.2f}%",
+         "operation": "ratio multiplied by one hundred; use only for a ratio, not an already scaled percentage"}
+        for cell in cells if isinstance(cell['value'], (int, float))
+        and not isinstance(cell['value'], bool) and math.isfinite(cell['value'] * 100)
+    ]
+    def render(text, numeric_claims=True, field="answer"):
         text = _text(text, 2000)
         if numeric_claims and re.search(r"\d", REF.sub("", text)):
-            raise ValueError("Use result-cell references for numeric claims")
+            literals = re.findall(r"\d+(?:[.,]\d+)*", REF.sub("", text))[:5]
+            raise ValueError(f"{field}: Use result-cell references for numeric claims; literal numbers {literals}. "
+                             "For a ratio percentage copy its |percent reference from percent_cells. "
+                             "Write formula constants and list numbering in words.")
         def replace(match):
             try:
-                value = queries[int(match[1])]["data"][int(match[2])][match[3]]
+                alias = match[3]
+                percent = alias.endswith('|percent')
+                if percent:
+                    alias = alias[:-8]
+                value = queries[int(match[1])]["data"][int(match[2])][alias]
             except (IndexError, KeyError):
                 raise ValueError("Invalid evidence cell reference") from None
             if value is None:
                 return "unavailable (NULL)"
+            if percent:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value * 100):
+                    raise ValueError("Percentage reference requires a finite numeric ratio")
+                return f"{value * 100:,.2f}%"
             return format(value, ",.12g") if isinstance(value, (int, float)) else str(value)
         return REF.sub(replace, text)
     def validate(obj):
@@ -282,10 +300,10 @@ def _narrate(run, plan, question="", context=None):
         if any(q["data"] for q in queries) and not REF.search(str(obj.get("answer", "")) + str(obj.get("findings", []))):
             raise ValueError("Answer or findings must use exact evidence_cells reference strings")
         answer = render(obj.get("answer"))
-        findings = [render(f) for f in _strings(obj.get("findings", []), 8)][:4]
+        findings = [render(f, field="findings") for f in _strings(obj.get("findings", []), 8)][:4]
         followups = [render(f, numeric_claims=False) for f in _strings(obj.get("followups", []), 4)]
         return {"answer": answer, "findings": findings, "followups": followups}
-    return run.json_call("explanation", "story", NARRATE_PROMPT, {"question": question, "dataset_context": context or {}, "understanding": plan.get("understanding", {}), "executed_queries": queries, "evidence_cells": cells}, validate)
+    return run.json_call("explanation", "story", NARRATE_PROMPT, {"question": question, "dataset_context": context or {}, "understanding": plan.get("understanding", {}), "executed_queries": queries, "evidence_cells": cells, "percent_cells": percent_cells}, validate)
 
 
 def _verdict():
