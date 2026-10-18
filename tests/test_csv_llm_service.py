@@ -361,6 +361,19 @@ class CsvLlmTests(unittest.TestCase):
         result = dashboard(self.session, 7)
         self.assertEqual([m['rawValue'] for m in result['metrics']], [500, 150])
 
+    def test_followup_cell_references_are_rendered(self):
+        story = dict(STORY, followups=['Compare the top 3 cities against {{0:0:total_profit}} total profit.'])
+        self.provider(PLAN, story)
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['suggested_questions'], ['Compare the top 3 cities against 150 total profit.'])
+
+    def test_invalid_followup_reference_is_repaired(self):
+        bad = dict(STORY, followups=['Explain {{3:0:month}}.'])
+        self.provider(PLAN, bad, STORY)
+        result = ask_csv(self.session, 7, 'Totals?')
+        self.assertEqual(result['suggested_questions'], STORY['followups'])
+        self.assertEqual([c['status'] for c in result['llm_trace']['calls'] if c['stage'] == 'explanation'], ['invalid_response', 'success'])
+
     def test_narrator_gets_copyable_reference_catalogue(self):
         p = self.provider(PLAN, STORY)
         ask_csv(self.session, 7, 'Totals?')

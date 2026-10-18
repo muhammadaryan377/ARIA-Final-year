@@ -263,9 +263,9 @@ def _narrate(run, plan, question="", context=None):
     cells = [{"reference": "{{" + str(qi) + ":" + str(ri) + ":" + col + "}}", "value": value}
              for qi, q in enumerate(queries) for ri, row in enumerate(q["data"][:12])
              for col, value in row.items()]
-    def render(text):
+    def render(text, numeric_claims=True):
         text = _text(text, 2000)
-        if re.search(r"\d", REF.sub("", text)):
+        if numeric_claims and re.search(r"\d", REF.sub("", text)):
             raise ValueError("Use result-cell references for numeric claims")
         def replace(match):
             try:
@@ -283,7 +283,7 @@ def _narrate(run, plan, question="", context=None):
             raise ValueError("Answer or findings must use exact evidence_cells reference strings")
         answer = render(obj.get("answer"))
         findings = [render(f) for f in _strings(obj.get("findings", []), 8)][:4]
-        followups = _strings(obj.get("followups", []), 4)
+        followups = [render(f, numeric_claims=False) for f in _strings(obj.get("followups", []), 4)]
         return {"answer": answer, "findings": findings, "followups": followups}
     return run.json_call("explanation", "story", NARRATE_PROMPT, {"question": question, "dataset_context": context or {}, "understanding": plan.get("understanding", {}), "executed_queries": queries, "evidence_cells": cells}, validate)
 
