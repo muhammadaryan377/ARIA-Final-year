@@ -445,3 +445,41 @@ def test_reindex_failure_is_not_reported_ready(make_rag, monkeypatch):
     with pytest.raises(RuntimeError):
         ingest.reindex(DID)
     assert rag.metadata.get_document(DID)['status'] == 'failed'
+
+
+def test_document_search_term_cannot_replace_latest_question(make_rag):
+    model = Model()
+    rag = make_rag(model)
+    rag._build_context_plan = lambda question, **kw: ContextPlan(
+        intent="document_query", question=question, document_ids=(DID,),
+        text_search_term="What action was proposed?")
+    original = rag._expand_search_queries
+    seen = []
+    def capture(question, plan):
+        seen.append(question)
+        return original(question, plan)
+    rag._expand_search_queries = capture
+    result = GroundedRAG.chat(rag, "Does revenue establish causation?", document_ids=[DID])
+    assert seen == ["Does revenue establish causation?"]
+    generation = [messages for role, messages in model.calls if role == "rag"]
+    assert generation
+    assert "Does revenue establish causation?" in generation[0][-1]["content"]
+
+
+def test_small_pdf_keeps_narrative_caveat_even_when_search_misses_it(make_rag):
+    docs = [document("Delivery totals.", cid="totals"),
+            document("Shipments include prior-period orders; populations differ.", cid="caveat")]
+    rag = make_rag(docs=docs)
+    rag._retrieve = lambda *a, **kw: docs[:1]
+    plan = ContextPlan(intent="document_query", question="Can these totals be divided?", document_ids=[DID])
+    evidence = rag._retrieve_adaptive([plan.question], plan)
+    assert {d.metadata["chunk_id"] for d in evidence} == {"totals", "caveat"}
+
+
+def test_failed_repair_never_becomes_supported(make_rag):
+    model = Model(verify="UNSUPPORTED")
+    rag = make_rag(model)
+    rag._semantic_evidence_check = lambda *a: True
+    result = rag.chat("What is revenue?", document_ids=[DID])
+    assert result["evidence_status"] != "supported"
+    assert not result["sources"]

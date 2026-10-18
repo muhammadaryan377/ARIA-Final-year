@@ -247,6 +247,8 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 "content": (
                     "Rewrite the latest user turn into one standalone search query for the active uploaded PDFs. "
                     "Use conversation/source metadata only to resolve references, ellipsis, dates and comparisons. "
+                    "Preserve the latest question and every requested subquestion. History resolves references only; "
+                    "never replace the latest request with an earlier question or answer. "
                     "Do not answer and do not invent facts. Return only the rewritten search query."
                 ),
             },
@@ -315,6 +317,18 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 page_numbers=list(plan.page_numbers), broad_query=plan.broad_query,
                 cross_document=plan.cross_document, prefer_tables=plan.prefer_tables,
             )
+        # Small selected PDFs fit in context: retain caveats and narrative around
+        # tables instead of allowing relevance filtering to erase them.
+        from .config import MAX_CONTEXT_CHARS
+        corpus = deduplicate_chunks([
+            doc for document_id in selected_ids
+            for doc in self.metadata.load_chunks(document_id)
+            if str(doc.metadata.get("document_id")) == document_id
+        ])
+        if len(selected_ids) == 1 and not plan.cross_document and corpus and len(corpus) <= 12 and sum(
+            len(doc.page_content) + 500 for doc in corpus
+        ) <= MAX_CONTEXT_CHARS:
+            return corpus
         gathered: list[Document] = []
 
         if plan.cross_document and 1 < len(selected_ids) <= 8:
@@ -564,7 +578,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
             )
 
         active_docs = self._docs_for_ids(documents, selected_ids)
-        base_query = plan.text_search_term or question
+        base_query = question
         search_query = self._rewrite_with_context(
             base_query,
             history=history,
@@ -578,6 +592,10 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 intent="clarification", document_ids=selected_ids,
                 evidence_status="rewrite_unavailable", context_plan=plan_payload,
             )
+        # Search rewrites are aids, not authority over the user's actual request.
+        answer_question = question
+        if search_query != question:
+            answer_question += "\nResolved reference context (preserve the original request): " + search_query
         queries = self._expand_search_queries(search_query, plan)
         retrieval_name = "hybrid_rrf_rerank" if RERANKER_ENABLED else "hybrid_rrf"
 
@@ -614,7 +632,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 intent="document_query", document_ids=selected_ids,
                 retrieval=retrieval_name, evidence_status="incomplete_comparison", context_plan=plan_payload,
             )
-        if not evidence_docs or not self._semantic_evidence_check(search_query, evidence_docs, plan):
+        if not evidence_docs or not self._semantic_evidence_check(answer_question, evidence_docs, plan):
             unavailable = (TRACE.get() or {}).get("evidence_verifier") == "unavailable"
             answer = ("The evidence verification service is temporarily unavailable. Please try again."
                       if unavailable else "I couldn't find that information in the uploaded PDF.")
@@ -653,7 +671,7 @@ class InsightPDFRAG(BaseInsightPDFRAG):
         )
         try:
             answer = self._secure_generate_answer(
-                question=search_query,
+                question=answer_question,
                 context=context,
                 table_facts=table_facts,
                 history=history,
@@ -672,10 +690,25 @@ class InsightPDFRAG(BaseInsightPDFRAG):
                 )
             integrity = citation_integrity(answer, sources)
             verification = (
-                verify_answer(self.llm, question=search_query, answer=answer,
+                verify_answer(self.llm, question=answer_question, answer=answer,
                               context=context, table_facts=table_facts)
                 if integrity == "valid" else "verification_failed"
             )
+            if verification == "verification_failed":
+                # One repair, subjected to the same citation and grounding checks.
+                repaired = self._secure_generate_answer(
+                    question=answer_question + "\nAnswer every part of this request directly. "
+                    "The previous draft failed grounding. Cite each factual claim next to its evidence; "
+                    "omit unsupported additions. Explicit evidence limitations can support a negative answer.",
+                    context=context, table_facts=table_facts, history=[], plan=plan,
+                )
+                if citation_integrity(repaired, sources) == "valid":
+                    verification = verify_answer(
+                        self.llm, question=answer_question, answer=repaired,
+                        context=context, table_facts=table_facts,
+                    )
+                    if verification == "verified":
+                        answer = repaired
             evidence_status = "supported" if verification == "verified" else verification
             if verification != "verified":
                 answer, sources = REFUSAL, []
