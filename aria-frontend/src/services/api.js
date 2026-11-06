@@ -1630,3 +1630,31 @@ export const submitFeedback = async (feedbackData = {}) => {
     return { success: false, message: error?.message || "Feedback could not be sent." };
   }
 };
+
+
+// Data exports return HTML/CSV blobs, not JSON. Keep cookie auth and
+// centralized 401 handling consistent with apiFetch.
+export const fetchDataExport = async (format, table = "") => {
+  if (format !== "html" && format !== "csv") {
+    throw new Error("Unsupported export format.");
+  }
+  if (format === "csv" && !table) {
+    throw new Error("Select a table to export.");
+  }
+  const params = new URLSearchParams({ format });
+  if (format === "csv") params.set("table", table);
+
+  const response = await fetch(resolvePath(`/data/export?${params.toString()}`), {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    headers: { "X-Request-ID": newRequestId() },
+  });
+  if (response.status === 401) handleUnauthorized();
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = normalizeApiError(data, response.status, response.headers);
+    throw new Error(error.message || "Could not download the report.");
+  }
+  return response.blob();
+};
