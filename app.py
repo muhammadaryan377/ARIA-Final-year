@@ -38,7 +38,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from core.config import STATIC_DIR, BASE_DIR  # noqa: E402
 from core.checks import run_checks  # noqa: E402
 from llm_provider import PROVIDERS  # noqa: E402
-from api import auth_routes, connect_routes, query_routes, schema_routes, document_routes, kpi_routes, copilot_routes, hypothesis_routes, hypothesis_investigation_routes, settings_routes, feedback_routes, autocomplete_routes, data_routes, insight_rag_routes, insights_routes, predictive_routes, prescription_routes, rl_routes, intelligence_routes, verification_routes  # noqa: E402
+from api import auth_routes, connect_routes, query_routes, schema_routes, document_routes, kpi_routes, copilot_routes, hypothesis_routes, hypothesis_investigation_routes, settings_routes, feedback_routes, autocomplete_routes, data_routes, data_export_routes, insight_rag_routes, insights_routes, predictive_routes, prescription_routes, rl_routes, intelligence_routes, verification_routes  # noqa: E402
 from core.ratelimit import limit, limit_heavy, limit_ip, limit_llm  # noqa: E402
 from fastapi import Depends as _Depends  # noqa: E402
 
@@ -224,6 +224,7 @@ app.include_router(settings_routes.router, dependencies=[_Depends(limit_heavy())
 app.include_router(feedback_routes.router, dependencies=[_Depends(limit("feedback", 60))])
 app.include_router(autocomplete_routes.router, dependencies=[_Depends(limit("autocomplete", 180))])
 app.include_router(data_routes.router, dependencies=[_Depends(limit_heavy())])
+app.include_router(data_export_routes.router, dependencies=[_Depends(limit_heavy())])
 app.include_router(insight_rag_routes.router, dependencies=[_Depends(limit_llm())])
 app.include_router(insights_routes.router, dependencies=[_Depends(limit_heavy())])
 app.include_router(predictive_routes.router, dependencies=[_Depends(limit_llm())])
