@@ -58,6 +58,9 @@ class DataExportTests(unittest.TestCase):
         session_patch = patch("api.data_export_routes.get_session", return_value=session)
         session_patch.start()
         self.addCleanup(session_patch.stop)
+        data_routes_patch = patch("api.data_routes.get_session", return_value=session)
+        data_routes_patch.start()
+        self.addCleanup(data_routes_patch.stop)
 
         self.app = FastAPI()
         self.app.include_router(router)
@@ -98,6 +101,7 @@ class DataExportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("ARIA Data Report", response.text)
         self.assertIn("Data Quality Findings", response.text)
+        self.assertIn('<div class="stat">Tables<b>1</b>', response.text)
         self.assertIn("records", response.text)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", response.text)
         self.assertNotIn("<script>alert(1)</script>", response.text)
