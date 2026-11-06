@@ -10,7 +10,7 @@ import {
   ChevronUp, Download, MoreHorizontal, Copy, Trash2,
 } from "lucide-react";
 
-import { apiFetch } from "../../services/api";
+import { apiFetch, fetchDataExport } from "../../services/api";
 
 type SourceType = "postgresql" | "mysql" | "csv" | "pdf" | "";
 type Tab = "sources" | "schema" | "preview" | "quality";
@@ -105,6 +105,11 @@ export default function Data({
   const [columnDetail, setColumnDetail] = useState<any>(null);
   const [showColumnDetail, setShowColumnDetail] = useState<string | null>(null);
   const [overrideMsg, setOverrideMsg] = useState("");
+  const [exportTable, setExportTable] = useState("");
+  const [exportPending, setExportPending] = useState<"html" | "csv" | null>(null);
+  const [exportError, setExportError] = useState("");
+  const [exportSuccess, setExportSuccess] = useState("");
+
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -117,6 +122,43 @@ export default function Data({
   const tableNames = Object.keys(tables);
   const sourceMeta = SOURCES.find((s) => s.id === sourceType);
   const SourceIcon = sourceMeta?.icon || Plug;
+
+  const exportTableName = tableNames.includes(exportTable) ? exportTable : (tableNames[0] || "");
+
+  const handleDataExport = async (format: "html" | "csv") => {
+    if (!isConnected || schemaStatus !== "success" || sourceType === "pdf") return;
+    if (format === "csv" && !exportTableName) {
+      setExportError("Select a table to export.");
+      return;
+    }
+    setExportPending(format);
+    setExportError("");
+    setExportSuccess("");
+    try {
+      const file = await fetchDataExport(format, exportTableName);
+      const safeSource = (dbName || "data").replace(/[^a-z0-9_-]/gi, "-").slice(0, 40);
+      const safeTable = exportTableName.replace(/[^a-z0-9_-]/gi, "-").slice(0, 40);
+      const filename = format === "html"
+        ? `aria-${safeSource}-report.html`
+        : `aria-${safeSource}-${safeTable}.csv`;
+      const url = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportSuccess(format === "html"
+        ? "HTML report downloaded. Open in your browser or print it as PDF."
+        : "Table CSV downloaded (up to the first 5,000 rows).");
+    } catch (e: any) {
+      setExportError(e?.message || "Could not download the export.");
+    } finally {
+      setExportPending(null);
+    }
+  };
+
 
   useEffect(() => { setLPass(propDbPassword || ""); }, [propDbPassword]);
 
@@ -1273,6 +1315,44 @@ export default function Data({
           Inspect your database structure, preview data, and monitor quality.
         </p>
       </div>
+
+      {isConnected && sourceType !== "pdf" && (
+        <div className="bg-card border border-border rounded-xl px-4 py-4 space-y-3" aria-label="Export my data">
+          <div className="flex items-start gap-2.5">
+            <Download size={16} className="text-primary mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-foreground">Export My Data</p>
+              <p className="text-[11px] text-muted-foreground">
+                Download a printable HTML report with table summaries and quality findings,
+                or save selected table records as CSV (first 5,000 rows).
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={schemaStatus !== "success" || !!exportPending}
+              onClick={() => handleDataExport("html")}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-semibold disabled:opacity-50">
+              {exportPending === "html" ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
+              Download HTML Report
+            </button>
+            <select aria-label="Select a table for CSV export" value={exportTableName}
+              onChange={(e) => setExportTable(e.target.value)}
+              disabled={schemaStatus !== "success" || !!exportPending || !tableNames.length}
+              className="bg-secondary border border-border rounded-lg px-3 py-2 text-xs text-foreground outline-none focus:border-primary min-w-[160px]">
+              {tableNames.length === 0 && <option value="">No tables available</option>}
+              {tableNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <button type="button" disabled={schemaStatus !== "success" || !!exportPending || !exportTableName}
+              onClick={() => handleDataExport("csv")}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-secondary text-foreground border border-border px-3 py-2 text-xs font-semibold hover:bg-secondary/80 disabled:opacity-50">
+              {exportPending === "csv" ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />}
+              Export Table CSV
+            </button>
+          </div>
+          {exportError && <p className="text-xs text-negative" role="alert">{exportError}</p>}
+          {exportSuccess && <p className="text-xs text-positive" role="status">{exportSuccess}</p>}
+        </div>
+      )}
 
       <div className="flex gap-1 bg-secondary rounded-lg p-0.5 w-fit">
         {TABS.map((t) => {
