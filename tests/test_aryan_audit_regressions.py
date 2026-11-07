@@ -176,9 +176,12 @@ def test_rag_uses_selected_users_deepseek_key(monkeypatch):
     import core.config as cfg
     import api.insight_rag_routes as routes
     monkeypatch.setattr(cfg, 'get_session', lambda uid: {'provider_name': 'deepseek', 'api_keys': {'deepseek': 'test-only-key'}})
-    provider = SimpleNamespace(models={})
+    import llm_provider
+    # _capability now delegates through insight_rag.providers.provider_for_session,
+    # which imports the factory from llm_provider rather than this route module.
+    provider = SimpleNamespace(provider='deepseek', models={'semi': 'test-model'})
     factory = Mock(return_value=provider)
-    monkeypatch.setattr(routes, 'create_provider', factory)
+    monkeypatch.setattr(llm_provider, 'create_provider', factory)
     monkeypatch.setattr(routes, 'InsightAgent', lambda **kw: kw)
     monkeypatch.setattr(routes, 'InsightPDFRAG', lambda **kw: kw)
     result = routes._capability(1)
