@@ -42,7 +42,7 @@ def _payload(**overrides):
 class StructuredFakeLLM:
     def __init__(self, response):
         self.response = response
-        self.models = {}
+        self.models = {"semi": "test-local-model"}
         self.structured_calls = 0
         self.plain_calls = 0
 
