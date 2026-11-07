@@ -3,5 +3,7 @@
 pytest==9.0.3
 httpx==0.28.1
 pytest-cov==7.1.0
+# Required build tool; fixed release also satisfies the CI pip-audit gate.
+setuptools==84.1.0
 # full_audit.py dev/audit script only; no production module imports requests.
 requests==2.34.2
