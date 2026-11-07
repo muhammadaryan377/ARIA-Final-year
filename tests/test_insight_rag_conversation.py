@@ -14,7 +14,7 @@ DOCS = [
 class FakeLLM:
     def __init__(self, payload):
         self.payload = payload
-        self.models = {}
+        self.models = {"semi": "test-local-model"}
 
     def chat(self, role, messages, **kwargs):
         assert role == "rag_scope"

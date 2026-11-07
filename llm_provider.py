@@ -398,10 +398,26 @@ PROVIDERS = {
 }
 
 # New providers deliberately require an account-supported model ID.
-for _name, _label, _env in (("openai", "OpenAI / GPT", "OPENAI_MODEL"),
-                             ("anthropic", "Anthropic / Claude", "ANTHROPIC_MODEL")):
-    PROVIDERS[_name] = {"label": _label, "models": {
-        role: os.getenv(_env, "") for role in ("sql", "story", "suggest", "semi", "schema", "vision")}}
+for _name, _label, _env, _privacy in (
+    (
+        "openai", "OpenAI / GPT", "OPENAI_MODEL",
+        "Hosted OpenAI inference. Selected schema, queries, data samples and PDF evidence "
+        "may be sent to OpenAI with explicit cloud consent.",
+    ),
+    (
+        "anthropic", "Anthropic / Claude", "ANTHROPIC_MODEL",
+        "Hosted Anthropic inference. Selected schema, queries, data samples and PDF evidence "
+        "may be sent to Anthropic with explicit cloud consent.",
+    ),
+):
+    PROVIDERS[_name] = {
+        "label": _label,
+        "privacy": _privacy,
+        "models": {
+            role: os.getenv(_env, "")
+            for role in ("sql", "story", "suggest", "semi", "schema", "vision")
+        },
+    }
 
 GROQ_MODEL = PROVIDERS["cloud"]["models"]["sql"]
 

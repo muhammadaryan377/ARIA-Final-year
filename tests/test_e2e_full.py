@@ -86,7 +86,14 @@ class TestFullE2E(unittest.TestCase):
     def test_02_providers_endpoint(self):
         r = self.client.get("/api/providers")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("providers", r.json())
+        providers = r.json()["providers"]
+        # Every provider shown to users must include a privacy disclosure.
+        for name, meta in providers.items():
+            self.assertTrue(meta.get("label"), name)
+            self.assertTrue(meta.get("privacy"), name)
+            self.assertIsInstance(meta.get("models"), dict, name)
+        self.assertIn("openai", providers)
+        self.assertIn("anthropic", providers)
 
     def test_03_auth_guard(self):
         r = self.client.post("/api/ask", json={"goal": "top products"})

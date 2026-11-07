@@ -93,6 +93,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   frontend:
     runs-on: ubuntu-latest
@@ -155,7 +157,12 @@ jobs:
             if curl -sf http://127.0.0.1:8000/api/health >/dev/null; then break; fi
             sleep 5
           done
-          curl -sf http://127.0.0.1:8000/api/health | head -c 300
+          if ! curl -fsS http://127.0.0.1:8000/api/health > /tmp/aria_e2e_health.json; then
+            echo "ARIA backend failed to become healthy. Startup log:"
+            cat /tmp/aria_e2e.log
+            exit 1
+          fi
+          head -c 300 /tmp/aria_e2e_health.json
       - name: List Playwright specs (must discover the converted suite)
         working-directory: aria-frontend
         env:

@@ -170,17 +170,23 @@ def test_kpi_nonfinite_values_are_missing(value):
 
 
 def test_rag_uses_selected_users_deepseek_key(monkeypatch):
+    # Authorize cloud use only inside this test: production consent remains
+    # fail-closed, while the test can check selected per-user key wiring.
+    monkeypatch.setenv('ARIA_CLOUD_CONSENT', '1')
     import core.config as cfg
     import api.insight_rag_routes as routes
     monkeypatch.setattr(cfg, 'get_session', lambda uid: {'provider_name': 'deepseek', 'api_keys': {'deepseek': 'test-only-key'}})
-    provider = SimpleNamespace(models={})
+    import llm_provider
+    # _capability now delegates through insight_rag.providers.provider_for_session,
+    # which imports the factory from llm_provider rather than this route module.
+    provider = SimpleNamespace(provider='deepseek', models={'semi': 'test-model'})
     factory = Mock(return_value=provider)
-    monkeypatch.setattr(routes, 'create_provider', factory)
+    monkeypatch.setattr(llm_provider, 'create_provider', factory)
     monkeypatch.setattr(routes, 'InsightAgent', lambda **kw: kw)
     monkeypatch.setattr(routes, 'InsightPDFRAG', lambda **kw: kw)
     result = routes._capability(1)
     assert factory.call_args.kwargs['api_key'] == 'test-only-key'
-    assert 'rag_scope' in factory.call_args.kwargs['models']
+    assert 'rag_scope' in provider.models
     assert result['user_id'] == 1
 
 
