@@ -170,6 +170,9 @@ def test_kpi_nonfinite_values_are_missing(value):
 
 
 def test_rag_uses_selected_users_deepseek_key(monkeypatch):
+    # Authorize cloud use only inside this test: production consent remains
+    # fail-closed, while the test can check selected per-user key wiring.
+    monkeypatch.setenv('ARIA_CLOUD_CONSENT', '1')
     import core.config as cfg
     import api.insight_rag_routes as routes
     monkeypatch.setattr(cfg, 'get_session', lambda uid: {'provider_name': 'deepseek', 'api_keys': {'deepseek': 'test-only-key'}})
