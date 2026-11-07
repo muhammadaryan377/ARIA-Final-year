@@ -186,7 +186,7 @@ def test_rag_uses_selected_users_deepseek_key(monkeypatch):
     monkeypatch.setattr(routes, 'InsightPDFRAG', lambda **kw: kw)
     result = routes._capability(1)
     assert factory.call_args.kwargs['api_key'] == 'test-only-key'
-    assert 'rag_scope' in factory.call_args.kwargs['models']
+    assert 'rag_scope' in provider.models
     assert result['user_id'] == 1
 
 
